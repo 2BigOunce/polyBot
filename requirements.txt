@@ -1,0 +1,21 @@
+# Blockchain
+web3>=6.0.0
+
+# HTTP & WebSocket
+aiohttp>=3.9.0
+websockets>=12.0
+
+# Polymarket
+py-clob-client>=0.17.0
+
+# Graphes
+networkx>=3.2
+
+# Base de données
+sqlalchemy>=2.0.0
+
+# Alerting
+python-telegram-bot>=21.0
+
+# Utilitaires
+python-dotenv>=1.0.0

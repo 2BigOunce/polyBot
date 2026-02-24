@@ -1,0 +1,25 @@
+# Secrets — NEVER commit
+.env
+
+# Trading module (private)
+src/trading/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Local database
+*.db
+*.sqlite
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Claude Code
+.claude/
