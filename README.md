@@ -1,0 +1,2 @@
+# polBot
+Polymarket insider detector
