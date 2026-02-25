@@ -4,9 +4,6 @@ from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 
 def format_age(wallet_age_days: float) -> str:
-    # YOUR TURN:
-    # If wallet_age_days < 1, return the age in hours (rounded to 1 decimal), e.g. "3.2h"
-    # Otherwise return the age in days (rounded to 1 decimal), e.g. "4.5d"
     if wallet_age_days < 1:
         return f"{wallet_age_days * 24:.1f}h"
     else:
