@@ -4,8 +4,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Connections ---
-ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY")
-RPC_URL = f"wss://polygon-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}"
+RPC_URL      = os.getenv("RPC_WS_URL")   # WebSocket — used for eth_subscribe
+HTTP_RPC_URL = os.getenv("RPC_HTTP_URL") # HTTP — used for eth_getBlock calls
 
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY")
