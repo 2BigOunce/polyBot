@@ -7,7 +7,7 @@ set -e
 
 BOT_USER="polybot"
 BOT_DIR="/home/$BOT_USER/polyBot"
-REPO_URL="https://github.com/<your-username>/polyBot.git"  # TODO: update
+REPO_URL="https://github.com/2BigOunce/polyBot.git"
 
 echo "=== [1/6] System update ==="
 apt update && apt upgrade -y
