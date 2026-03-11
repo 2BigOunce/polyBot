@@ -71,10 +71,6 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                     continue
                 seen_tx.add(tx_hash)
 
-                # First poll: just record what exists, don't alert on historical data
-                if is_first_poll:
-                    continue
-
                 market     = trade.get("conditionId", "")
                 side       = trade.get("side", "")
                 size       = float(trade.get("usdcSize", 0))
@@ -82,7 +78,12 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                 outcome    = trade.get("outcome", "")
                 match_time = str(trade.get("timestamp", ""))
 
+                # Always persist to DB so restarts don't re-process historical trades
                 save_trade(tx_hash, wallet, market, side, size, price, outcome, match_time)
+
+                # First poll: bootstrap only — don't trigger paper trades
+                if is_first_poll:
+                    continue
 
                 if side == "BUY" and market and price > 0:
                     await copy_trade(wallet, market, outcome, price, size, session)
