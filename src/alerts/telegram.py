@@ -71,6 +71,46 @@ async def send_paper_sell(
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
 
 
+async def send_real_buy(
+    followed_wallet: str,
+    outcome: str,
+    market: str,
+    insider_price: float,
+    fill_price: float,
+    size_usdc: float,
+):
+    drift = (fill_price - insider_price) / insider_price * 100 if insider_price else 0
+    message = (
+        f"💸 REAL BUY\n"
+        f"Copying: {followed_wallet}\n"
+        f"Market: {market}\n"
+        f"Outcome: {outcome}\n"
+        f"Insider: {insider_price:.3f} → Fill: {fill_price:.3f} ({drift:+.1f}%)\n"
+        f"Size: {size_usdc:.2f} USDC"
+    )
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+
+async def send_real_sell(
+    market: str,
+    outcome: str,
+    status: str,
+    pnl: float,
+    size_usdc: float,
+):
+    emoji = "✅ WON" if status == "won" else "❌ LOST"
+    message = (
+        f"💸 REAL SELL — {emoji}\n"
+        f"Market: {market}\n"
+        f"Outcome: {outcome}\n"
+        f"Size: {size_usdc:.2f} USDC\n"
+        f"P&L: {pnl:+.2f} USDC"
+    )
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+
 async def send_cluster_alert(wallet: str, cluster: list[str]):
     siblings = "\n".join(f"  • {w}" for w in cluster)
     message = (

@@ -49,3 +49,10 @@ EARLY_SELL_HOURS = 24         # flag as unreliable if wallet sells with > N hour
 PAPER_BANKROLL = 1_000        # USDC — total simulated capital
 PAPER_MAX_TRADE = 100         # USDC — cap per individual trade
 PAPER_MAX_MARKET_EXPOSURE = 200  # USDC — cap total per market across all buys
+
+# --- Real trading ---
+REAL_TRADING_ENABLED    = os.getenv("REAL_TRADING_ENABLED", "false").lower() == "true"
+REAL_WALLET_PRIVATE_KEY = os.getenv("REAL_WALLET_PRIVATE_KEY")
+REAL_MAX_TRADE          = float(os.getenv("REAL_MAX_TRADE", "10"))    # USDC cap per trade
+REAL_MAX_POSITION_PCT   = float(os.getenv("REAL_MAX_POSITION_PCT", "0.10"))  # 10% of balance max
+REAL_MAX_PRICE_DRIFT    = float(os.getenv("REAL_MAX_PRICE_DRIFT", "0.15"))   # skip if price moved >15%

@@ -59,6 +59,24 @@ def init_db():
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS real_trades (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                followed_wallet TEXT NOT NULL,
+                market          TEXT NOT NULL,
+                outcome         TEXT NOT NULL,
+                token_id        TEXT NOT NULL,
+                insider_price   REAL NOT NULL,
+                fill_price      REAL,
+                size_usdc       REAL NOT NULL,
+                order_id        TEXT,
+                entered_at      TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'open',
+                pnl             REAL,
+                closed_at       TEXT
+            )
+        """)
+
 
 def save_trade(
     trade_id: str,
@@ -225,6 +243,54 @@ def get_deposit_amount(wallet: str) -> float:
             (wallet,),
         ).fetchone()
     return float(row[0]) if row[0] else 0.0
+
+
+def save_real_trade(
+    followed_wallet: str,
+    market: str,
+    outcome: str,
+    token_id: str,
+    insider_price: float,
+    fill_price: float,
+    size_usdc: float,
+    order_id: str,
+) -> int:
+    entered_at = datetime.now(tz=timezone.utc).isoformat()
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO real_trades
+                (followed_wallet, market, outcome, token_id, insider_price, fill_price, size_usdc, order_id, entered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (followed_wallet.lower(), market, outcome, token_id, insider_price, fill_price, size_usdc, order_id, entered_at),
+        )
+        return cur.lastrowid
+
+
+def has_open_real_trade(wallet: str, market: str, outcome: str) -> bool:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM real_trades WHERE followed_wallet = ? AND market = ? AND outcome = ? AND status = 'open' LIMIT 1",
+            (wallet.lower(), market, outcome),
+        ).fetchone()
+    return row is not None
+
+
+def get_open_real_trades() -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM real_trades WHERE status = 'open'"
+        ).fetchall()
+
+
+def close_real_trade(trade_id: int, status: str, pnl: float) -> None:
+    closed_at = datetime.now(tz=timezone.utc).isoformat()
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE real_trades SET status = ?, pnl = ?, closed_at = ? WHERE id = ?",
+            (status, pnl, closed_at, trade_id),
+        )
 
 
 def save_deposit(
