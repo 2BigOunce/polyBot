@@ -276,6 +276,9 @@ Note : Ce module est probablement le plus compétitif — des équipes avec des 
 
 ## Ressources utiles
 
+Pour les formules de risk management et les patterns d'architecture,
+consulte references/synthese_insider_bot.md
+
 - [Polymarket CLOB API docs](https://docs.polymarket.com)
 - [py-clob-client GitHub](https://github.com/Polymarket/py-clob-client)
 - [Alchemy Polygon WebSocket](https://docs.alchemy.com/reference/polygon-api-quickstart)

@@ -14,6 +14,9 @@ WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# --- Polygonscan ---
+POLYGONSCAN_API_KEY = os.getenv("POLYGONSCAN_API_KEY")
+
 # --- Polymarket CLOB ---
 CLOB_API_KEY = os.getenv("CLOB_API_KEY")
 CLOB_SECRET = os.getenv("CLOB_SECRET")
@@ -34,3 +37,15 @@ ALERT_DEPOSIT_HIGH = 1_000    # USDC — wallet < 1 day old
 ALERT_DEPOSIT_MEDIUM = 5_000  # USDC — wallet < 7 days old
 WALLET_AGE_HIGH = 1           # days
 WALLET_AGE_MEDIUM = 7         # days
+
+CLUSTER_MIN_SIZE = 3          # min suspects sharing a funder to trigger cluster alert
+CEX_FUNDER_THRESHOLD = 50     # funders with more successors than this are treated as CEX/bridge and ignored
+
+# --- Behavioral filter (Option B) ---
+WALLET_INACTIVITY_HOURS = 24  # remove from watchlist if no trade within this delay
+EARLY_SELL_HOURS = 24         # flag as unreliable if wallet sells with > N hours before market resolution
+
+# --- Paper trading ---
+PAPER_BANKROLL = 1_000        # USDC — total simulated capital
+PAPER_MAX_TRADE = 100         # USDC — cap per individual trade
+PAPER_MAX_MARKET_EXPOSURE = 200  # USDC — cap total per market across all buys

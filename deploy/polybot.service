@@ -1,0 +1,19 @@
+[Unit]
+Description=polyBot — Polymarket insider detector & copy-trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polybot
+WorkingDirectory=/home/polybot/polyBot
+ExecStart=/home/polybot/polyBot/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+# Send stdout/stderr to journald (read with: journalctl -u polybot -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

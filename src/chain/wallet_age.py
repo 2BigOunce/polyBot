@@ -1,27 +1,60 @@
-from web3 import AsyncWeb3
+import asyncio
+import aiohttp
 from datetime import datetime, timezone
 
+from config.settings import POLYGONSCAN_API_KEY
 
-async def get_wallet_age(w3: AsyncWeb3, address: str) -> datetime | None:
-    address = w3.to_checksum_address(address)
-    current_block = await w3.eth.block_number
+# Etherscan V2 unified API — chainid=137 targets Polygon
+POLYGONSCAN_API = "https://api.etherscan.io/v2/api"
+POLYGON_CHAIN_ID = 137
 
-    # If nonce is 0 at current block, the wallet has never sent a transaction
-    current_nonce = await w3.eth.get_transaction_count(address, block_identifier=current_block)
-    if current_nonce == 0:
-        return None
+# Polygonscan free tier: 5 req/s — enforce at most 3/s to stay safe
+_sem = asyncio.Semaphore(1)
+_MIN_INTERVAL = 0.35  # seconds between releases (~3 req/s)
 
-    low = 0
-    high = current_block
 
-    while low < high:
-        mid = (low + high) // 2
-        nonce_at_mid = await w3.eth.get_transaction_count(address, block_identifier=mid)
+async def get_wallet_age(address: str, session: aiohttp.ClientSession) -> datetime | None:
+    """
+    Return the datetime of the wallet's first transaction on Polygon.
+    Uses Polygonscan REST API — no archive node required.
 
-        if nonce_at_mid == 0:
-            low = mid + 1
-        else:
-            high = mid
+    Returns:
+        datetime  → first transaction timestamp (wallet exists on-chain)
+        None      → wallet has no transactions yet (genuinely brand-new)
 
-    block = await w3.eth.get_block(low)
-    return datetime.fromtimestamp(block["timestamp"], tz=timezone.utc)
+    Raises:
+        LookupError  → API rate-limited or unreachable; caller should skip this deposit
+    """
+    params = {
+        "chainid": POLYGON_CHAIN_ID,
+        "module":  "account",
+        "action":  "txlist",
+        "address": address,
+        "sort":    "asc",
+        "page":    1,
+        "offset":  1,   # only the first transaction
+        "apikey":  POLYGONSCAN_API_KEY,
+    }
+    async with _sem:
+        try:
+            async with session.get(POLYGONSCAN_API, params=params) as resp:
+                data = await resp.json()
+
+            msg = data.get("message", "")
+
+            if data.get("status") == "1" and data.get("result"):
+                timestamp = int(data["result"][0]["timeStamp"])
+                return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+
+            if msg == "No transactions found":
+                return None  # genuinely brand-new wallet — age 0 is correct
+
+            # Anything else (NOTOK, rate limit, etc.) is an API error
+            raise LookupError(f"Polygonscan: {msg!r}")
+
+        except LookupError:
+            raise
+        except Exception as e:
+            raise LookupError(f"Polygonscan request failed: {e}") from e
+        finally:
+            await asyncio.sleep(_MIN_INTERVAL)

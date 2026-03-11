@@ -4,19 +4,21 @@ from datetime import datetime, timezone
 
 import websockets
 from web3 import AsyncWeb3
-from web3.middleware import ExtraDataToPOAMiddleware
 
 from config.settings import (
     ALERT_DEPOSIT_HIGH,
     ALERT_DEPOSIT_MEDIUM,
-    HTTP_RPC_URL,
     POLYMARKET_CONTRACTS,
     RPC_URL,
     USDC_ADDRESS,
     WALLET_AGE_HIGH,
     WALLET_AGE_MEDIUM,
 )
-from src.alerts.telegram import send_alert
+import aiohttp
+
+from src.alerts.telegram import send_alert, send_cluster_alert
+from src.analysis.funders import get_funders
+from src.analysis.graph import add_funder_edges, is_cluster_alert
 from src.chain.database import init_db, save_deposit
 from src.chain.wallet_age import get_wallet_age
 from src.clob import watched_wallets
@@ -43,32 +45,54 @@ def decode_transfer(log: dict) -> tuple[str, str, float, str]:
     return sender, recipient, amount_usdc, tx_hash
 
 
-async def handle_deposit(w3: AsyncWeb3, sender: str, amount_usdc: float, tx_hash: str):
+async def handle_deposit(
+    session: aiohttp.ClientSession,
+    sender: str,
+    amount_usdc: float,
+    tx_hash: str,
+):
     async with _semaphore:
         try:
-            sender = w3.to_checksum_address(sender)
+            sender = AsyncWeb3.to_checksum_address(sender)
 
             if sender in _age_cache:
                 wallet_age_days = _age_cache[sender]
             else:
-                first_tx_date = await get_wallet_age(w3, sender)
+                try:
+                    first_tx_date = await get_wallet_age(sender, session)
+                except LookupError as e:
+                    # Polygonscan rate-limited or unreachable — skip deposit, don't cache
+                    print(f"[deposit] skipped {sender[:10]}… ({e})")
+                    return
                 if first_tx_date is None:
-                    wallet_age_days = 0
+                    wallet_age_days = 0.0  # genuinely brand-new wallet
                 else:
                     now = datetime.now(tz=timezone.utc)
                     wallet_age_days = (now - first_tx_date).total_seconds() / 86400
-                _age_cache[sender] = wallet_age_days
+                _age_cache[sender] = wallet_age_days  # only cache on success
 
             print(f"[deposit] {sender} | age: {wallet_age_days:.1f}d | amount: {amount_usdc:.2f} USDC")
 
+            flagged = False
             if amount_usdc >= ALERT_DEPOSIT_HIGH and wallet_age_days <= WALLET_AGE_HIGH:
                 save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "HIGH")
                 watched_wallets.add(sender)
                 await send_alert("HIGH", sender, amount_usdc, wallet_age_days, tx_hash)
+                flagged = True
             elif amount_usdc >= ALERT_DEPOSIT_MEDIUM and wallet_age_days <= WALLET_AGE_MEDIUM:
                 save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "MEDIUM")
                 watched_wallets.add(sender)
                 await send_alert("MEDIUM", sender, amount_usdc, wallet_age_days, tx_hash)
+                flagged = True
+
+            if flagged:
+                funders = await get_funders(sender, session)
+                add_funder_edges(sender, funders)
+                if is_cluster_alert(sender):
+                    from src.analysis.graph import get_cluster
+                    cluster = get_cluster(sender)
+                    print(f"[cluster] {sender} belongs to a cluster of {len(cluster)+1}")
+                    await send_cluster_alert(sender, cluster)
 
         except Exception as e:
             print(f"[error] {sender} — {e}")
@@ -76,8 +100,7 @@ async def handle_deposit(w3: AsyncWeb3, sender: str, amount_usdc: float, tx_hash
 
 async def monitor_deposits():
     init_db()
-    w3 = AsyncWeb3(AsyncWeb3.AsyncHTTPProvider(HTTP_RPC_URL))
-    w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+    session = aiohttp.ClientSession()
 
     retry_delay = 5
 
@@ -110,7 +133,7 @@ async def monitor_deposits():
                     if tx_hash in _seen_tx:
                         continue
                     _seen_tx.add(tx_hash)
-                    asyncio.create_task(handle_deposit(w3, sender, amount_usdc, tx_hash))
+                    asyncio.create_task(handle_deposit(session, sender, amount_usdc, tx_hash))
 
         except Exception as e:
             print(f"[monitor] Connection lost: {e}. Retrying in {retry_delay}s...")
