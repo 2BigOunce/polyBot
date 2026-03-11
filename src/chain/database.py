@@ -245,6 +245,27 @@ def get_deposit_amount(wallet: str) -> float:
     return float(row[0]) if row[0] else 0.0
 
 
+def get_real_pnl_summary() -> dict:
+    """Return aggregated P&L stats for real trades (/realpnl Telegram command)."""
+    with get_connection() as conn:
+        won   = conn.execute("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM real_trades WHERE status = 'won'").fetchone()
+        lost  = conn.execute("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM real_trades WHERE status = 'lost'").fetchone()
+        open_ = conn.execute("SELECT COUNT(*), COALESCE(SUM(size_usdc), 0) FROM real_trades WHERE status = 'open'").fetchone()
+        best  = conn.execute(
+            "SELECT outcome, insider_price, pnl FROM real_trades WHERE status = 'won' ORDER BY pnl DESC LIMIT 1"
+        ).fetchone()
+    total_closed = won[0] + lost[0]
+    return {
+        "won_count":  won[0],  "won_pnl":  won[1],
+        "lost_count": lost[0], "lost_pnl": lost[1],
+        "net_pnl":    won[1] + lost[1],
+        "win_rate":   won[0] / total_closed * 100 if total_closed else 0.0,
+        "open_count": open_[0],
+        "open_exposure": open_[1],
+        "best_trade": dict(best) if best else None,
+    }
+
+
 def save_real_trade(
     followed_wallet: str,
     market: str,

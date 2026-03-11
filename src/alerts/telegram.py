@@ -4,7 +4,7 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from src.chain.database import get_pnl_summary
+from src.chain.database import get_pnl_summary, get_real_pnl_summary
 
 
 def format_age(wallet_age_days: float) -> str:
@@ -144,10 +144,28 @@ async def _pnl_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("\n".join(lines))
 
 
+async def _realpnl_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    s = get_real_pnl_summary()
+    lines = [
+        "💸 Real Trading P&L",
+        f"✅ WON : {s['won_count']} trades | {s['won_pnl']:+.2f} USDC",
+        f"❌ LOST: {s['lost_count']} trades | {s['lost_pnl']:+.2f} USDC",
+        "─────────────────────",
+        f"NET   : {s['net_pnl']:+.2f} USDC",
+        f"Win rate: {s['win_rate']:.1f}%",
+        f"Open  : {s['open_count']} positions | {s['open_exposure']:.2f} USDC exposed",
+    ]
+    if s["best_trade"]:
+        t = s["best_trade"]
+        lines.append(f"💰 Best trade: {t['outcome']} @ {t['insider_price']:.3f} | {t['pnl']:+.2f} USDC")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def run_bot() -> None:
     """Start the Telegram bot and listen for commands."""
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("pnl", _pnl_command))
+    app.add_handler(CommandHandler("realpnl", _realpnl_command))
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
