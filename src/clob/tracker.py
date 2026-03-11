@@ -13,6 +13,7 @@ from src.chain.database import (
     save_trade,
 )
 from src.clob import watched_wallets
+from src.clob.onchain_tracker import get_wake_event
 from src.trading.paper_trader import copy_trade
 
 CLOB_API      = "https://clob.polymarket.com"
@@ -112,7 +113,15 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
             print(f"[clob] Error polling {wallet}: {e}")
 
         is_first_poll = False
-        await asyncio.sleep(POLL_INTERVAL)
+
+        # Wait for an on-chain OrderFilled event (fast path) or fall back to the regular interval
+        wake = get_wake_event(wallet)
+        try:
+            await asyncio.wait_for(wake.wait(), timeout=POLL_INTERVAL)
+        except asyncio.TimeoutError:
+            pass  # no on-chain event — regular poll
+        finally:
+            wake.clear()
 
 
 
