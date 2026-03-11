@@ -1,6 +1,10 @@
-from telegram import Bot
+import asyncio
+
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from src.chain.database import get_pnl_summary
 
 
 def format_age(wallet_age_days: float) -> str:
@@ -77,3 +81,34 @@ async def send_cluster_alert(wallet: str, cluster: list[str]):
     )
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+
+async def _pnl_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    s = get_pnl_summary()
+    lines = [
+        "📊 Paper Trading P&L",
+        f"✅ WON : {s['won_count']} trades | {s['won_pnl']:+.2f} USDC",
+        f"❌ LOST: {s['lost_count']} trades | {s['lost_pnl']:+.2f} USDC",
+        "─────────────────────",
+        f"NET   : {s['net_pnl']:+.2f} USDC",
+        f"Win rate: {s['win_rate']:.1f}%",
+        f"Open  : {s['open_count']} positions",
+    ]
+    if s["top_wallet"]:
+        w = s["top_wallet"]
+        addr = w["followed_wallet"]
+        lines.append(f"\n🏆 Top wallet: {addr[:6]}…{addr[-4:]} | {w['total']:+.2f} USDC")
+    if s["best_trade"]:
+        t = s["best_trade"]
+        lines.append(f"💰 Best trade: {t['outcome']} @ {t['entry_price']:.3f} | {t['pnl']:+.2f} USDC")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def run_bot() -> None:
+    """Start the Telegram bot and listen for commands."""
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("pnl", _pnl_command))
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await asyncio.Event().wait()  # run forever alongside other coroutines

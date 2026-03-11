@@ -189,6 +189,34 @@ def get_market_exposure(market: str) -> float:
     return float(row[0])
 
 
+def get_pnl_summary() -> dict:
+    """Return aggregated P&L stats for the /pnl Telegram command."""
+    with get_connection() as conn:
+        won  = conn.execute("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM paper_trades WHERE status = 'won'").fetchone()
+        lost = conn.execute("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM paper_trades WHERE status = 'lost'").fetchone()
+        open_ = conn.execute("SELECT COUNT(*) FROM paper_trades WHERE status = 'open'").fetchone()
+        top_wallet = conn.execute(
+            "SELECT followed_wallet, COALESCE(SUM(pnl), 0) as total FROM paper_trades"
+            " WHERE status IN ('won','lost') GROUP BY followed_wallet ORDER BY total DESC LIMIT 1"
+        ).fetchone()
+        best_trade = conn.execute(
+            "SELECT outcome, entry_price, pnl FROM paper_trades WHERE status = 'won' ORDER BY pnl DESC LIMIT 1"
+        ).fetchone()
+    total = won[1] + lost[1]
+    total_closed = won[0] + lost[0]
+    return {
+        "won_count":  won[0],
+        "won_pnl":    won[1],
+        "lost_count": lost[0],
+        "lost_pnl":   lost[1],
+        "net_pnl":    total,
+        "win_rate":   won[0] / total_closed * 100 if total_closed else 0.0,
+        "open_count": open_[0],
+        "top_wallet": dict(top_wallet) if top_wallet else None,
+        "best_trade": dict(best_trade) if best_trade else None,
+    }
+
+
 def get_deposit_amount(wallet: str) -> float:
     """Return the largest deposit amount recorded for a wallet (used for sizing)."""
     with get_connection() as conn:
