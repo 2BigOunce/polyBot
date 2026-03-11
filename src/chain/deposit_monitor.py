@@ -119,6 +119,9 @@ async def monitor_deposits():
                 }))
 
                 resp = json.loads(await ws.recv())
+                if "result" not in resp:
+                    print(f"[monitor] Infura error: {resp}")
+                    raise KeyError("result")
                 sub_id = resp["result"]
                 print("[monitor] Connected — listening for deposits...")
 
