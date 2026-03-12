@@ -33,10 +33,12 @@ POLYMARKET_CONTRACTS = [CTF_EXCHANGE, NEG_RISK_EXCHANGE, NEG_RISK_ADAPTER]
 
 # --- Detection thresholds ---
 
-ALERT_DEPOSIT_HIGH = 1_000    # USDC — wallet < 1 day old
+ALERT_DEPOSIT_HIGH = 15_000   # USDC — wallet < 1 day old
 ALERT_DEPOSIT_MEDIUM = 5_000  # USDC — wallet < 7 days old
 WALLET_AGE_HIGH = 1           # days
 WALLET_AGE_MEDIUM = 7         # days
+
+MIN_INSIDER_TRADE_SIZE = 1_000  # USDC — ignore insider BUYs below this size
 
 CLUSTER_MIN_SIZE = 3          # min suspects sharing a funder to trigger cluster alert
 CEX_FUNDER_THRESHOLD = 50     # funders with more successors than this are treated as CEX/bridge and ignored
@@ -51,8 +53,11 @@ PAPER_MAX_TRADE = 100         # USDC — cap per individual trade
 PAPER_MAX_MARKET_EXPOSURE = 200  # USDC — cap total per market across all buys
 
 # --- Real trading ---
+CLOB_PROXY_URL          = os.getenv("CLOB_PROXY_URL")  # residential proxy, e.g. http://user:pass@host:port
 REAL_TRADING_ENABLED    = os.getenv("REAL_TRADING_ENABLED", "false").lower() == "true"
-REAL_WALLET_PRIVATE_KEY = os.getenv("REAL_WALLET_PRIVATE_KEY")
+REAL_WALLET_PRIVATE_KEY  = os.getenv("REAL_WALLET_PRIVATE_KEY")
+REAL_PROXY_WALLET        = os.getenv("REAL_PROXY_WALLET")  # Polymarket proxy wallet address (maker in orders)
 REAL_MAX_TRADE          = float(os.getenv("REAL_MAX_TRADE", "10"))    # USDC cap per trade
 REAL_MAX_POSITION_PCT   = float(os.getenv("REAL_MAX_POSITION_PCT", "0.10"))  # 10% of balance max
 REAL_MAX_PRICE_DRIFT    = float(os.getenv("REAL_MAX_PRICE_DRIFT", "0.15"))   # skip if price moved >15%
+REAL_MIN_LIQUIDITY      = float(os.getenv("REAL_MIN_LIQUIDITY", "500"))       # USDC — min ask-side volume before placing order

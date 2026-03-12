@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 
 import aiohttp
 
-from config.settings import EARLY_SELL_HOURS
-from src.alerts.telegram import send_alert, send_paper_sell  # noqa: F401
+from config.settings import EARLY_SELL_HOURS, MIN_INSIDER_TRADE_SIZE
+from src.alerts.telegram import send_alert  # noqa: F401
 from src.chain.database import (
     close_paper_trade,
     get_open_paper_trade,
@@ -12,6 +12,7 @@ from src.chain.database import (
     mark_wallet_status,
     save_trade,
 )
+from src.trading.real_trader import close_trade
 from src.clob import watched_wallets
 from src.clob.onchain_tracker import get_wake_event
 from src.trading.paper_trader import copy_trade
@@ -87,6 +88,9 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                     continue
 
                 if side == "BUY" and market and price > 0:
+                    if size < MIN_INSIDER_TRADE_SIZE:
+                        print(f"[clob] {wallet[:10]}… trade too small ({size:.0f} USDC) — skipped")
+                        continue
                     await copy_trade(wallet, market, outcome, price, size, session)
 
                 if side == "SELL" and market and price > 0:
@@ -97,7 +101,9 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                         status = "won" if pnl > 0 else "lost"
                         close_paper_trade(paper["id"], status, pnl)
                         print(f"[paper] SELL {outcome} @ {price:.3f} | P&L: {pnl:+.2f} USDC")
-                        await send_paper_sell(market, outcome, status, pnl, paper["simulated_size"])
+
+                    # Follow the insider's exit: close our real trade
+                    await close_trade(wallet, market, outcome, price, session)
 
                     # Unreliable check: selling far before resolution = bad signal
                     end_date = await _get_market_end_date(market, session)

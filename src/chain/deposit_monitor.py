@@ -16,7 +16,7 @@ from config.settings import (
 )
 import aiohttp
 
-from src.alerts.telegram import send_alert, send_cluster_alert
+from src.alerts.telegram import send_cluster_alert
 from src.analysis.funders import get_funders
 from src.analysis.graph import add_funder_edges, is_cluster_alert
 from src.chain.database import init_db, save_deposit
@@ -77,12 +77,10 @@ async def handle_deposit(
             if amount_usdc >= ALERT_DEPOSIT_HIGH and wallet_age_days <= WALLET_AGE_HIGH:
                 save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "HIGH")
                 watched_wallets.add(sender)
-                await send_alert("HIGH", sender, amount_usdc, wallet_age_days, tx_hash)
                 flagged = True
             elif amount_usdc >= ALERT_DEPOSIT_MEDIUM and wallet_age_days <= WALLET_AGE_MEDIUM:
                 save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "MEDIUM")
                 watched_wallets.add(sender)
-                await send_alert("MEDIUM", sender, amount_usdc, wallet_age_days, tx_hash)
                 flagged = True
 
             if flagged:
@@ -102,12 +100,12 @@ async def monitor_deposits():
     init_db()
     session = aiohttp.ClientSession()
 
-    retry_delay = 5
+    retry_delay = 30
 
     while True:
         try:
             async with websockets.connect(RPC_URL) as ws:
-                retry_delay = 5
+                retry_delay = 30
                 await ws.send(json.dumps({
                     "jsonrpc": "2.0",
                     "id": 1,

@@ -289,6 +289,14 @@ def save_real_trade(
         return cur.lastrowid
 
 
+def get_open_real_trade(wallet: str, market: str, outcome: str) -> sqlite3.Row | None:
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM real_trades WHERE followed_wallet = ? AND market = ? AND outcome = ? AND status = 'open' LIMIT 1",
+            (wallet.lower(), market, outcome),
+        ).fetchone()
+
+
 def has_open_real_trade(wallet: str, market: str, outcome: str) -> bool:
     with get_connection() as conn:
         row = conn.execute(

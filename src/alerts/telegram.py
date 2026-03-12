@@ -71,6 +71,27 @@ async def send_paper_sell(
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
 
 
+async def send_real_sell(
+    followed_wallet: str,
+    outcome: str,
+    market: str,
+    buy_price: float,
+    sell_price: float,
+    pnl: float,
+):
+    emoji = "✅ WON" if pnl > 0 else "❌ LOST"
+    message = (
+        f"{emoji} REAL SELL\n"
+        f"Copying: {followed_wallet}\n"
+        f"Market: {market}\n"
+        f"Outcome: {outcome}\n"
+        f"Buy: {buy_price:.3f} → Sell: {sell_price:.3f}\n"
+        f"P&L: {pnl:+.2f} USDC"
+    )
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+
 async def send_real_buy(
     followed_wallet: str,
     outcome: str,
