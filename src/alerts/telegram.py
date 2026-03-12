@@ -99,6 +99,7 @@ async def send_real_buy(
     insider_price: float,
     fill_price: float,
     size_usdc: float,
+    insider_size: float = 0.0,
 ):
     drift = (fill_price - insider_price) / insider_price * 100 if insider_price else 0
     message = (
@@ -106,6 +107,7 @@ async def send_real_buy(
         f"Copying: {followed_wallet}\n"
         f"Market: {market}\n"
         f"Outcome: {outcome}\n"
+        f"Insider trade: {insider_size:.0f} USDC\n"
         f"Insider: {insider_price:.3f} → Fill: {fill_price:.3f} ({drift:+.1f}%)\n"
         f"Size: {size_usdc:.2f} USDC"
     )
