@@ -39,6 +39,8 @@ WALLET_AGE_HIGH = 1           # days
 WALLET_AGE_MEDIUM = 7         # days
 
 MIN_INSIDER_TRADE_SIZE = 1_000  # USDC — ignore insider BUYs below this size
+MIN_INSIDER_PRICE      = 0.10  # ignore BUYs at near-zero odds (arb/dust)
+MAX_INSIDER_PRICE      = 0.90  # ignore BUYs at near-certainty odds (arb/MM)
 
 CLUSTER_MIN_SIZE = 3          # min suspects sharing a funder to trigger cluster alert
 CEX_FUNDER_THRESHOLD = 50     # funders with more successors than this are treated as CEX/bridge and ignored

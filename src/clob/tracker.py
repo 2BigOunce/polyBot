@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import aiohttp
 
-from config.settings import EARLY_SELL_HOURS, MIN_INSIDER_TRADE_SIZE
+from config.settings import EARLY_SELL_HOURS, MAX_INSIDER_PRICE, MIN_INSIDER_PRICE, MIN_INSIDER_TRADE_SIZE
 from src.alerts.telegram import send_alert  # noqa: F401
 from src.chain.database import (
     close_paper_trade,
@@ -90,6 +90,9 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                 if side == "BUY" and market and price > 0:
                     if size < MIN_INSIDER_TRADE_SIZE:
                         print(f"[clob] {wallet[:10]}… trade too small ({size:.0f} USDC) — skipped")
+                        continue
+                    if price < MIN_INSIDER_PRICE or price > MAX_INSIDER_PRICE:
+                        print(f"[clob] {wallet[:10]}… price out of range ({price:.3f}) — skipped")
                         continue
                     await copy_trade(wallet, market, outcome, price, size, session)
 
