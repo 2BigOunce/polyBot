@@ -34,9 +34,9 @@ POLYMARKET_CONTRACTS = [CTF_EXCHANGE, NEG_RISK_EXCHANGE, NEG_RISK_ADAPTER]
 # --- Detection thresholds ---
 
 ALERT_DEPOSIT_HIGH = 15_000   # USDC — wallet < 1 day old
-ALERT_DEPOSIT_MEDIUM = 8_000  # USDC — wallet < 3 days old
+ALERT_DEPOSIT_MEDIUM = 8_000  # USDC — wallet < 5 days old
 WALLET_AGE_HIGH = 1           # days
-WALLET_AGE_MEDIUM = 3         # days
+WALLET_AGE_MEDIUM = 5         # days
 
 MIN_INSIDER_TRADE_SIZE = 1_000  # USDC — ignore insider BUYs below this size
 MIN_INSIDER_PRICE      = 0.10  # ignore BUYs at near-zero odds (arb/dust)
