@@ -32,6 +32,29 @@ async def send_alert(
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
 
 
+async def send_super_alert(
+    wallet: str,
+    market: str,
+    outcome: str,
+    price: float,
+    trade_size: float,
+    max_deposit: float,
+    buys_on_market: int,
+):
+    ratio = (trade_size / max_deposit * 100) if max_deposit else 0
+    message = (
+        f"🚨 SUPER INSIDER ALERT\n"
+        f"Wallet: {wallet}\n"
+        f"Market: {market}\n"
+        f"Outcome: {outcome} @ {price:.3f}\n"
+        f"Trade: {trade_size:.0f} USDC ({ratio:.1f}% of deposit)\n"
+        f"Deposit: {max_deposit:.0f} USDC\n"
+        f"Buys on this market: {buys_on_market}"
+    )
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+
 async def send_paper_buy(
     followed_wallet: str,
     outcome: str,

@@ -108,6 +108,30 @@ def has_traded(wallet: str) -> bool:
     return row is not None
 
 
+def get_wallet_market_stats(wallet: str, market: str) -> dict:
+    """
+    Return stats used for super-alert detection:
+      - distinct_markets : number of distinct markets this wallet has BUYed on
+      - buys_on_market   : number of BUY trades on the given market
+      - max_deposit      : largest single deposit amount for this wallet
+    """
+    with get_connection() as conn:
+        distinct = conn.execute(
+            "SELECT COUNT(DISTINCT market) FROM trades WHERE wallet = ? AND side = 'BUY'",
+            (wallet.lower(),),
+        ).fetchone()[0]
+        buys = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE wallet = ? AND market = ? AND side = 'BUY'",
+            (wallet.lower(), market),
+        ).fetchone()[0]
+        row = conn.execute(
+            "SELECT COALESCE(MAX(amount_usdc), 0) FROM deposits WHERE wallet_address = ?",
+            (wallet.lower(),),
+        ).fetchone()
+        max_deposit = row[0] if row else 0
+    return {"distinct_markets": distinct, "buys_on_market": buys, "max_deposit": max_deposit}
+
+
 def get_wallet_trade_ids(wallet: str) -> set[str]:
     """Return all trade_ids already stored for a wallet (used to bootstrap seen_tx on startup)."""
     with get_connection() as conn:
