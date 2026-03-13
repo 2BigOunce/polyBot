@@ -55,43 +55,12 @@ async def send_super_alert(
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)  # super alert — with sound
 
 
-async def send_paper_buy(
-    followed_wallet: str,
-    outcome: str,
-    market: str,
-    entry_price: float,
-    our_size: float,
-    insider_size: float,
-):
-    message = (
-        f"Paper BUY\n"
-        f"Copying: {followed_wallet}\n"
-        f"Market: {market}\n"
-        f"Outcome: {outcome} @ {entry_price:.3f}\n"
-        f"Our size: {our_size:.2f} USDC\n"
-        f"Insider trade: {insider_size:.2f} USDC"
-    )
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
+async def send_paper_buy(*args, **kwargs):
+    pass  # paper notifications disabled
 
 
-async def send_paper_sell(
-    market: str,
-    outcome: str,
-    status: str,
-    pnl: float,
-    our_size: float,
-):
-    emoji = "✅ WON" if status == "won" else "❌ LOST"
-    message = (
-        f"Paper SELL — {emoji}\n"
-        f"Market: {market}\n"
-        f"Outcome: {outcome}\n"
-        f"Size: {our_size:.2f} USDC\n"
-        f"P&L: {pnl:+.2f} USDC"
-    )
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
+async def send_paper_sell(*args, **kwargs):
+    pass  # paper notifications disabled
 
 
 async def send_real_buy(
