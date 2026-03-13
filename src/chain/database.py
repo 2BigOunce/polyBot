@@ -77,6 +77,20 @@ def init_db():
             )
         """)
 
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS super_alerts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet          TEXT NOT NULL,
+                market          TEXT NOT NULL,
+                outcome         TEXT NOT NULL,
+                price           REAL NOT NULL,
+                trade_size      REAL NOT NULL,
+                max_deposit     REAL NOT NULL,
+                buys_on_market  INTEGER NOT NULL,
+                detected_at     TEXT NOT NULL
+            )
+        """)
+
 
 def save_trade(
     trade_id: str,
@@ -344,6 +358,35 @@ def close_real_trade(trade_id: int, status: str, pnl: float) -> None:
             "UPDATE real_trades SET status = ?, pnl = ?, closed_at = ? WHERE id = ?",
             (status, pnl, closed_at, trade_id),
         )
+
+
+def save_super_alert(
+    wallet: str,
+    market: str,
+    outcome: str,
+    price: float,
+    trade_size: float,
+    max_deposit: float,
+    buys_on_market: int,
+) -> None:
+    detected_at = datetime.now(tz=timezone.utc).isoformat()
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO super_alerts
+                (wallet, market, outcome, price, trade_size, max_deposit, buys_on_market, detected_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (wallet.lower(), market, outcome, price, trade_size, max_deposit, buys_on_market, detected_at),
+        )
+
+
+def get_recent_super_alerts(limit: int = 5) -> list[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM super_alerts ORDER BY detected_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
 
 
 def save_deposit(

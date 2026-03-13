@@ -4,7 +4,7 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from src.chain.database import get_pnl_summary, get_real_pnl_summary
+from src.chain.database import get_pnl_summary, get_real_pnl_summary, get_recent_super_alerts, save_super_alert
 
 
 def format_age(wallet_age_days: float) -> str:
@@ -51,6 +51,7 @@ async def send_super_alert(
         f"Deposit: {max_deposit:.0f} USDC\n"
         f"Buys on this market: {buys_on_market}"
     )
+    save_super_alert(wallet, market, outcome, price, trade_size, max_deposit, buys_on_market)
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)  # super alert — with sound
 
@@ -138,6 +139,24 @@ async def _pnl_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("\n".join(lines))
 
 
+async def _superalerts_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    alerts = get_recent_super_alerts(limit=5)
+    if not alerts:
+        await update.message.reply_text("No super alerts recorded yet.")
+        return
+    lines = ["🚨 Last super alerts"]
+    for a in alerts:
+        ratio = (a["trade_size"] / a["max_deposit"] * 100) if a["max_deposit"] else 0
+        wallet = a["wallet"]
+        lines.append(
+            f"\n{a['detected_at'][:16]}\n"
+            f"Wallet: {wallet[:6]}…{wallet[-4:]}\n"
+            f"{a['outcome']} @ {a['price']:.3f} | {a['trade_size']:.0f} USDC ({ratio:.1f}%)\n"
+            f"Buys on market: {a['buys_on_market']}"
+        )
+    await update.message.reply_text("\n".join(lines))
+
+
 async def _realpnl_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     s = get_real_pnl_summary()
     lines = [
@@ -160,6 +179,7 @@ async def run_bot() -> None:
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("pnl", _pnl_command))
     app.add_handler(CommandHandler("realpnl", _realpnl_command))
+    app.add_handler(CommandHandler("superalerts", _superalerts_command))
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
