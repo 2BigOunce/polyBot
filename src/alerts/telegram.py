@@ -29,7 +29,7 @@ async def send_alert(
         f"Tx: {tx_hash}"
     )
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)  # deposit alert — with sound
 
 
 async def send_super_alert(
@@ -52,7 +52,7 @@ async def send_super_alert(
         f"Buys on this market: {buys_on_market}"
     )
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)  # super alert — with sound
 
 
 async def send_paper_buy(
@@ -72,7 +72,7 @@ async def send_paper_buy(
         f"Insider trade: {insider_size:.2f} USDC"
     )
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
 
 
 async def send_paper_sell(
@@ -91,7 +91,7 @@ async def send_paper_sell(
         f"P&L: {pnl:+.2f} USDC"
     )
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
 
 
 async def send_real_buy(
@@ -114,7 +114,7 @@ async def send_real_buy(
         f"Size: {size_usdc:.2f} USDC"
     )
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
 
 
 async def send_real_sell(
@@ -133,7 +133,7 @@ async def send_real_sell(
         f"P&L: {pnl:+.2f} USDC"
     )
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
 
 
 async def send_cluster_alert(wallet: str, cluster: list[str]):
@@ -145,7 +145,7 @@ async def send_cluster_alert(wallet: str, cluster: list[str]):
         f"{siblings}"
     )
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
 
 
 async def _pnl_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
