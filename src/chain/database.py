@@ -337,6 +337,16 @@ def get_market_real_exposure(market: str, outcome: str) -> float:
     return float(row[0])
 
 
+def has_opposing_real_trade(market: str, outcome: str) -> bool:
+    """Return True if we have an open position on the same market but a different outcome."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM real_trades WHERE market = ? AND outcome != ? AND status = 'open' LIMIT 1",
+            (market, outcome),
+        ).fetchone()
+    return row is not None
+
+
 def get_open_real_trade(wallet: str, market: str, outcome: str) -> sqlite3.Row | None:
     with get_connection() as conn:
         return conn.execute(
