@@ -53,7 +53,8 @@ async def send_super_alert(
     )
     save_super_alert(wallet, market, outcome, price, trade_size, max_deposit, buys_on_market)
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)  # super alert — with sound
+    msg = await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)  # super alert — with sound
+    await bot.pin_chat_message(chat_id=TELEGRAM_CHAT_ID, message_id=msg.message_id, disable_notification=True)
 
 
 async def send_paper_buy(*args, **kwargs):
