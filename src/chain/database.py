@@ -327,6 +327,16 @@ def save_real_trade(
         return cur.lastrowid
 
 
+def get_market_real_exposure(market: str, outcome: str) -> float:
+    """Return total USDC currently open on a given market/outcome across all wallets."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(size_usdc), 0) FROM real_trades WHERE market = ? AND outcome = ? AND status = 'open'",
+            (market, outcome),
+        ).fetchone()
+    return float(row[0])
+
+
 def get_open_real_trade(wallet: str, market: str, outcome: str) -> sqlite3.Row | None:
     with get_connection() as conn:
         return conn.execute(
