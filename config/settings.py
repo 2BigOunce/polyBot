@@ -24,9 +24,10 @@ CLOB_PASSPHRASE = os.getenv("CLOB_PASSPHRASE")
 
 # --- Polymarket contract addresses (Polygon mainnet) ---
 USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"       # Bridged USDC (USDC.e), 6 decimals
-CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"       # Main exchange contract
-NEG_RISK_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a"   # NegRisk exchange
-NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"    # NegRisk adapter
+CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"       # Main order-matching exchange
+NEG_RISK_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a"   # NegRisk order-matching exchange
+NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"    # NegRisk adapter — ERC-1155 tokens for neg_risk markets
+GNOSIS_CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"          # Gnosis ConditionalTokens — ERC-1155 tokens for standard markets
 
 # All contracts that can receive USDC deposits — we monitor transfers to any of these
 POLYMARKET_CONTRACTS = [CTF_EXCHANGE, NEG_RISK_EXCHANGE, NEG_RISK_ADAPTER]
@@ -40,7 +41,7 @@ WALLET_AGE_MEDIUM = 5         # days
 
 MIN_INSIDER_TRADE_SIZE = 1_000  # USDC — ignore insider BUYs below this size
 MIN_INSIDER_PRICE      = 0.10  # ignore BUYs at near-zero odds (arb/dust)
-MAX_INSIDER_PRICE      = 0.90  # ignore BUYs at near-certainty odds (arb/MM)
+MAX_INSIDER_PRICE      = 0.75  # ignore BUYs at near-certainty odds (arb/MM)
 
 CLUSTER_MIN_SIZE = 3          # min suspects sharing a funder to trigger cluster alert
 CEX_FUNDER_THRESHOLD = 50     # funders with more successors than this are treated as CEX/bridge and ignored
