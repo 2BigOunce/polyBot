@@ -146,6 +146,32 @@ def get_wallet_market_stats(wallet: str, market: str) -> dict:
     return {"distinct_markets": distinct, "buys_on_market": buys, "max_deposit": max_deposit}
 
 
+def get_wallets_latest_buy(wallets: list[str]) -> dict[str, dict]:
+    """
+    For each wallet, return its most recent BUY trade (market, outcome, size, price).
+    Returns a dict keyed by wallet address (lowercase).
+    """
+    if not wallets:
+        return {}
+    placeholders = ",".join("?" * len(wallets))
+    lower = [w.lower() for w in wallets]
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT wallet, market, outcome, size, price
+            FROM trades
+            WHERE wallet IN ({placeholders}) AND side = 'BUY'
+            AND match_time = (
+                SELECT MAX(t2.match_time) FROM trades t2
+                WHERE t2.wallet = trades.wallet AND t2.side = 'BUY'
+            )
+            """,
+            lower,
+        ).fetchall()
+    return {row["wallet"]: {"market": row["market"], "outcome": row["outcome"],
+                            "size": row["size"], "price": row["price"]} for row in rows}
+
+
 def get_wallet_trade_ids(wallet: str) -> set[str]:
     """Return all trade_ids already stored for a wallet (used to bootstrap seen_tx on startup)."""
     with get_connection() as conn:

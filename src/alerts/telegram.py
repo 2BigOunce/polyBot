@@ -4,7 +4,7 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from src.chain.database import get_pnl_summary, get_real_pnl_summary, get_recent_super_alerts, save_super_alert
+from src.chain.database import get_pnl_summary, get_real_pnl_summary, get_recent_super_alerts, get_wallets_latest_buy, save_super_alert
 
 
 def format_age(wallet_age_days: float) -> str:
@@ -108,7 +108,17 @@ async def send_real_sell(
 
 
 async def send_cluster_alert(wallet: str, cluster: list[str]):
-    siblings = "\n".join(f"  • {w}" for w in cluster)
+    all_wallets = [wallet] + cluster
+    latest_buys = get_wallets_latest_buy(all_wallets)
+
+    def _wallet_line(w: str) -> str:
+        info = latest_buys.get(w.lower())
+        if info:
+            market_short = info["market"][:12]
+            return f"  • {w}\n    └ {info['outcome']} @ {info['price']:.3f} | {info['size']:.0f} USDC | {market_short}…"
+        return f"  • {w}"
+
+    siblings = "\n".join(_wallet_line(w) for w in cluster)
     message = (
         f"Cluster Detected!\n"
         f"Wallet: {wallet}\n"
