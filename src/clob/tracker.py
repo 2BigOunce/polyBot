@@ -4,10 +4,11 @@ from datetime import datetime, timezone
 import aiohttp
 
 from config.settings import EARLY_SELL_HOURS, MAX_INSIDER_PRICE, MIN_INSIDER_PRICE, MIN_INSIDER_TRADE_SIZE
-from src.alerts.telegram import send_alert  # noqa: F401
+from src.alerts.telegram import send_alert, send_super_alert  # noqa: F401
 from src.chain.database import (
     close_paper_trade,
     get_open_paper_trade,
+    get_wallet_market_stats,
     get_wallet_trade_ids,
     mark_wallet_status,
     save_trade,
@@ -86,6 +87,16 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                 # First poll: bootstrap only — don't trigger paper trades
                 if is_first_poll:
                     continue
+
+                # Super alert: concentrated wallet betting on a single market
+                if side == "BUY" and market and MIN_INSIDER_PRICE < price < MAX_INSIDER_PRICE:
+                    stats = get_wallet_market_stats(wallet, market)
+                    if stats["distinct_markets"] == 1 and stats["buys_on_market"] >= 2:
+                        print(f"[clob] 🚨 SUPER ALERT {wallet[:10]}… {outcome} @ {price:.3f} | {size:.0f} USDC")
+                        await send_super_alert(
+                            wallet, market, outcome, price, size,
+                            stats["max_deposit"], stats["buys_on_market"],
+                        )
 
                 if side == "BUY" and market and price > 0:
                     if size < MIN_INSIDER_TRADE_SIZE:
