@@ -28,6 +28,10 @@ _active: set[str] = set()
 # Cache market end dates to avoid repeated /markets/{id} calls
 _market_end_date_cache: dict[str, datetime | None] = {}
 
+# Count early sells at a loss per wallet — 3 triggers unreliable status
+_early_sell_counts: dict[str, int] = {}
+EARLY_SELL_LIMIT = 3
+
 
 async def _get_market_end_date(market: str, session: aiohttp.ClientSession) -> datetime | None:
     """Fetch the resolution date of a market from CLOB (public endpoint). Cached per market."""
@@ -120,14 +124,20 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                     await close_trade(wallet, market, outcome, price, session)
 
                     # Unreliable check: selling far before resolution = bad signal
+                    # Requires EARLY_SELL_LIMIT consecutive early-loss sells before marking unreliable
                     end_date = await _get_market_end_date(market, session)
                     if end_date:
                         now = datetime.now(tz=timezone.utc)
                         hours_until_end = (end_date - now).total_seconds() / 3600
                         if hours_until_end > EARLY_SELL_HOURS and (paper is None or pnl < 0):
-                            print(f"[clob] {wallet} sold at a loss with {hours_until_end:.1f}h left — unreliable")
-                            mark_wallet_status(wallet, "unreliable")
-                            watched_wallets.watched.discard(wallet)
+                            _early_sell_counts[wallet] = _early_sell_counts.get(wallet, 0) + 1
+                            count = _early_sell_counts[wallet]
+                            print(f"[clob] {wallet} early loss sell #{count}/{EARLY_SELL_LIMIT} ({hours_until_end:.1f}h left)")
+                            if count >= EARLY_SELL_LIMIT:
+                                print(f"[clob] {wallet} reached {EARLY_SELL_LIMIT} early loss sells — unreliable")
+                                mark_wallet_status(wallet, "unreliable")
+                                watched_wallets.watched.discard(wallet)
+                                _early_sell_counts.pop(wallet, None)
 
         except Exception as e:
             print(f"[clob] Error polling {wallet}: {e}")
