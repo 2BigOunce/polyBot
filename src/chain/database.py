@@ -351,13 +351,18 @@ def get_deposit_amount(wallet: str) -> float:
 
 
 def get_real_pnl_summary() -> dict:
-    """Return aggregated P&L stats for real trades (/realpnl Telegram command)."""
+    """Return aggregated P&L stats for real trades (/realpnl Telegram command).
+
+    Only includes trades from wallets still present in the deposits table,
+    excluding wallets removed during NOTOK cleanup or manual purges.
+    """
+    _active = "AND followed_wallet IN (SELECT wallet FROM deposits)"
     with get_connection() as conn:
-        won   = conn.execute("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM real_trades WHERE status = 'won'").fetchone()
-        lost  = conn.execute("SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM real_trades WHERE status = 'lost'").fetchone()
-        open_ = conn.execute("SELECT COUNT(*), COALESCE(SUM(size_usdc), 0) FROM real_trades WHERE status = 'open'").fetchone()
+        won   = conn.execute(f"SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM real_trades WHERE status = 'won' {_active}").fetchone()
+        lost  = conn.execute(f"SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM real_trades WHERE status = 'lost' {_active}").fetchone()
+        open_ = conn.execute(f"SELECT COUNT(*), COALESCE(SUM(size_usdc), 0) FROM real_trades WHERE status = 'open' {_active}").fetchone()
         best  = conn.execute(
-            "SELECT outcome, insider_price, pnl FROM real_trades WHERE status = 'won' ORDER BY pnl DESC LIMIT 1"
+            f"SELECT outcome, insider_price, pnl FROM real_trades WHERE status = 'won' {_active} ORDER BY pnl DESC LIMIT 1"
         ).fetchone()
     total_closed = won[0] + lost[0]
     return {
