@@ -48,14 +48,17 @@ async def get_wallet_age(address: str, session: aiohttp.ClientSession) -> dateti
             if nonce_latest == 0:
                 return None  # no outgoing transactions — treat as brand-new
 
-            # Check thresholds from oldest to newest — stop at first match
-            # age_days will be the lower bound of the age bucket found
-            age_days = 0
+            # Check thresholds from oldest to newest — stop at first match.
+            # Falls back to neutral (30 days) if historical state is unavailable.
+            age_days = 30  # neutral default: between 7 and 90 → no scorer adjustment
             for days in (90, 7, 1):
                 block = current_block - days * _BLOCKS_PER_DAY
                 if block < 1:
                     continue
-                nonce = int(await _rpc(session, "eth_getTransactionCount", [address, hex(block)]), 16)
+                try:
+                    nonce = int(await _rpc(session, "eth_getTransactionCount", [address, hex(block)]), 16)
+                except LookupError:
+                    break  # historical state not supported — use neutral default
                 if nonce > 0:
                     age_days = days
                     break
