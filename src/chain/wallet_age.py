@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 
 from config.settings import POLYGONSCAN_API_KEY
 
-POLYGONSCAN_API = "https://api.polygonscan.com/api"
+# Etherscan V2 unified API — chainid=137 targets Polygon
+POLYGONSCAN_API = "https://api.etherscan.io/v2/api"
+POLYGON_CHAIN_ID = 137
 
 # Polygonscan free tier: 5 req/s — enforce at most 3/s to stay safe
 _sem = asyncio.Semaphore(1)
@@ -24,6 +26,7 @@ async def get_wallet_age(address: str, session: aiohttp.ClientSession) -> dateti
         LookupError  → API rate-limited or unreachable; caller should skip this deposit
     """
     params = {
+        "chainid": POLYGON_CHAIN_ID,
         "module":  "account",
         "action":  "txlist",
         "address": address,
