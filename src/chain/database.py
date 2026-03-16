@@ -172,6 +172,47 @@ def get_wallets_latest_buy(wallets: list[str]) -> dict[str, dict]:
                             "size": row["size"], "price": row["price"]} for row in rows}
 
 
+def get_wallet_scoring_data(wallet: str) -> dict:
+    """
+    Return all data needed to compute the Bayesian confidence score for a wallet:
+      - wins / total : historical win rate from real_trades
+      - distinct_markets : number of distinct markets traded (CLOB activity)
+      - wallet_age_days : minimum age across all deposit records
+    """
+    w = wallet.lower()
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'won' THEN 1 ELSE 0 END) as wins
+            FROM real_trades
+            WHERE lower(followed_wallet) = ? AND status IN ('won', 'lost')
+            """,
+            (w,),
+        ).fetchone()
+        wins  = row["wins"]  or 0
+        total = row["total"] or 0
+
+        distinct = conn.execute(
+            "SELECT COUNT(DISTINCT market) FROM trades WHERE wallet = ? AND side = 'BUY'",
+            (w,),
+        ).fetchone()[0]
+
+        age_row = conn.execute(
+            "SELECT MIN(wallet_age_days) FROM deposits WHERE lower(wallet_address) = ?",
+            (w,),
+        ).fetchone()
+        wallet_age_days = age_row[0] if age_row and age_row[0] is not None else None
+
+    return {
+        "wins": wins,
+        "total": total,
+        "distinct_markets": distinct,
+        "wallet_age_days": wallet_age_days,
+    }
+
+
 def get_wallet_trade_ids(wallet: str) -> set[str]:
     """Return all trade_ids already stored for a wallet (used to bootstrap seen_tx on startup)."""
     with get_connection() as conn:
