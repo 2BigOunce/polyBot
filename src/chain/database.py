@@ -356,7 +356,7 @@ def get_real_pnl_summary() -> dict:
     Only includes trades from wallets still present in the deposits table,
     excluding wallets removed during NOTOK cleanup or manual purges.
     """
-    _active = "AND followed_wallet IN (SELECT wallet FROM deposits)"
+    _active = "AND followed_wallet IN (SELECT wallet_address FROM deposits)"
     with get_connection() as conn:
         won   = conn.execute(f"SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM real_trades WHERE status = 'won' {_active}").fetchone()
         lost  = conn.execute(f"SELECT COUNT(*), COALESCE(SUM(pnl), 0) FROM real_trades WHERE status = 'lost' {_active}").fetchone()
