@@ -2,59 +2,68 @@ import asyncio
 import aiohttp
 from datetime import datetime, timezone
 
-from config.settings import POLYGONSCAN_API_KEY
+from config.settings import HTTP_RPC_URL
 
-# Etherscan V2 unified API — chainid=137 targets Polygon
-POLYGONSCAN_API = "https://api.etherscan.io/v2/api"
+# Polygon produces ~43,200 blocks per day (2s block time)
+_BLOCKS_PER_DAY = 43_200
+
+# Kept for backward-compatibility: funders.py imports these constants
+POLYGONSCAN_API = None
 POLYGON_CHAIN_ID = 137
 
-# Polygonscan free tier: 5 req/s — enforce at most 3/s to stay safe
-_sem = asyncio.Semaphore(1)
-_MIN_INTERVAL = 0.35  # seconds between releases (~3 req/s)
+_sem = asyncio.Semaphore(3)
+_MIN_INTERVAL = 0.0  # no rate limit needed for RPC calls
+
+
+async def _rpc(session: aiohttp.ClientSession, method: str, params: list):
+    payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    async with session.post(HTTP_RPC_URL, json=payload) as resp:
+        data = await resp.json()
+    if "error" in data:
+        raise LookupError(f"RPC error: {data['error']}")
+    return data["result"]
 
 
 async def get_wallet_age(address: str, session: aiohttp.ClientSession) -> datetime | None:
     """
-    Return the datetime of the wallet's first transaction on Polygon.
-    Uses Polygonscan REST API — no archive node required.
+    Estimate wallet age using threshold checks on Polygon RPC.
+    No API key required — uses PublicNode HTTP RPC.
+
+    Checks eth_getTransactionCount at 3 historical blocks (1d, 7d, 90d ago)
+    to classify the wallet into an age bucket.
 
     Returns:
-        datetime  → first transaction timestamp (wallet exists on-chain)
-        None      → wallet has no transactions yet (genuinely brand-new)
+        datetime  → approximate first-activity timestamp
+        None      → wallet has no outgoing transactions (brand-new or receive-only)
 
     Raises:
-        LookupError  → API rate-limited or unreachable; caller should skip this deposit
+        LookupError  → RPC unreachable or query failed
     """
-    params = {
-        "chainid": POLYGON_CHAIN_ID,
-        "module":  "account",
-        "action":  "txlist",
-        "address": address,
-        "sort":    "asc",
-        "page":    1,
-        "offset":  1,   # only the first transaction
-        "apikey":  POLYGONSCAN_API_KEY,
-    }
     async with _sem:
         try:
-            async with session.get(POLYGONSCAN_API, params=params) as resp:
-                data = await resp.json()
+            current_hex = await _rpc(session, "eth_blockNumber", [])
+            current_block = int(current_hex, 16)
 
-            msg = data.get("message", "")
+            nonce_latest = int(await _rpc(session, "eth_getTransactionCount", [address, "latest"]), 16)
+            if nonce_latest == 0:
+                return None  # no outgoing transactions — treat as brand-new
 
-            if data.get("status") == "1" and data.get("result"):
-                timestamp = int(data["result"][0]["timeStamp"])
-                return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            # Check thresholds from oldest to newest — stop at first match
+            # age_days will be the lower bound of the age bucket found
+            age_days = 0
+            for days in (90, 7, 1):
+                block = current_block - days * _BLOCKS_PER_DAY
+                if block < 1:
+                    continue
+                nonce = int(await _rpc(session, "eth_getTransactionCount", [address, hex(block)]), 16)
+                if nonce > 0:
+                    age_days = days
+                    break
 
-            if msg == "No transactions found":
-                return None  # genuinely brand-new wallet — age 0 is correct
-
-            # Anything else (NOTOK, rate limit, etc.) is an API error
-            raise LookupError(f"Polygonscan: {msg!r}")
+            approx_ts = datetime.now(tz=timezone.utc).timestamp() - age_days * 86_400
+            return datetime.fromtimestamp(approx_ts, tz=timezone.utc)
 
         except LookupError:
             raise
         except Exception as e:
-            raise LookupError(f"Polygonscan request failed: {e}") from e
-        finally:
-            await asyncio.sleep(_MIN_INTERVAL)
+            raise LookupError(f"RPC wallet age failed: {e}") from e
