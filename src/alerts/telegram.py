@@ -73,8 +73,10 @@ async def send_real_buy(
     fill_price: float,
     size_usdc: float,
     insider_size: float = 0.0,
+    p_hat: float = 0.0,
 ):
     drift = (fill_price - insider_price) / insider_price * 100 if insider_price else 0
+    score_str = f"{p_hat:.2f}" if p_hat else "n/a"
     message = (
         f"💸 REAL BUY\n"
         f"Copying: {followed_wallet}\n"
@@ -82,7 +84,8 @@ async def send_real_buy(
         f"Outcome: {outcome}\n"
         f"Insider trade: {insider_size:.0f} USDC\n"
         f"Insider: {insider_price:.3f} → Fill: {fill_price:.3f} ({drift:+.1f}%)\n"
-        f"Size: {size_usdc:.2f} USDC"
+        f"Size: {size_usdc:.2f} USDC\n"
+        f"Score (p̂): {score_str}"
     )
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
