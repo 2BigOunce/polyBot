@@ -1,17 +1,16 @@
 import aiohttp
 
 from config.settings import POLYGONSCAN_API_KEY
-from src.chain.wallet_age import POLYGONSCAN_API, POLYGON_CHAIN_ID, _sem, _MIN_INTERVAL
+from src.chain.wallet_age import POLYGONSCAN_API, _sem, _MIN_INTERVAL
 import asyncio
 
 
 async def get_funders(wallet: str, session: aiohttp.ClientSession) -> list[str]:
     """
     Return a list of unique addresses that sent MATIC to wallet.
-    Uses Etherscan V2 API with chainid=137 (Polygon).
+    Uses Polygonscan API.
     """
     params = {
-        "chainid": POLYGON_CHAIN_ID,
         "module":  "account",
         "action":  "txlist",
         "address": wallet,
