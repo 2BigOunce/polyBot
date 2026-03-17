@@ -96,15 +96,19 @@ async def fetch_wallet_wr(wallet: str, session: aiohttp.ClientSession) -> dict:
         return {"closed": closed, "wins": wins, "win_rate": win_rate}
 
 
-async def should_reject_wallet(wallet: str, session: aiohttp.ClientSession) -> bool:
+async def should_reject_wallet(
+    wallet: str, session: aiohttp.ClientSession
+) -> tuple[bool, dict]:
     """
-    Return True if the wallet's CLOB history is bad enough to reject at entry.
+    Return (rejected, wr_data) where rejected is True if the wallet's CLOB history
+    is bad enough to skip at entry.
 
     Rejection criteria:
       - ≥10 closed positions with WR < 40%   (statistically significant)
       - ≥ 5 closed positions with WR < 25%   (very bad, even small sample)
 
-    Wallets with no history (new to Polymarket) always return False.
+    Wallets with no history (new to Polymarket) always return (False, wr_data).
+    wr_data is always returned so callers can cache it in the DB.
     """
     wr = await fetch_wallet_wr(wallet, session)
     closed = wr["closed"]
@@ -112,14 +116,14 @@ async def should_reject_wallet(wallet: str, session: aiohttp.ClientSession) -> b
 
     if closed >= _MIN_CLOSED_STRICT and rate < _MAX_WR_STRICT:
         print(f"[entry_filter] {wallet[:10]}… rejected — WR {rate:.0%} over {closed} closed trades (≥10, <40%)")
-        return True
+        return True, wr
     if closed >= _MIN_CLOSED_HARSH and rate < _MAX_WR_HARSH:
         print(f"[entry_filter] {wallet[:10]}… rejected — WR {rate:.0%} over {closed} closed trades (≥5, <25%)")
-        return True
+        return True, wr
 
     if closed > 0:
         print(f"[entry_filter] {wallet[:10]}… accepted — WR {rate:.0%} over {closed} closed trades")
     else:
         print(f"[entry_filter] {wallet[:10]}… accepted — no CLOB history (new to Polymarket)")
 
-    return False
+    return False, wr

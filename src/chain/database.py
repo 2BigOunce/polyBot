@@ -30,6 +30,14 @@ def init_db():
             conn.execute("ALTER TABLE deposits ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
         except Exception:
             pass  # column already exists
+        try:
+            conn.execute("ALTER TABLE deposits ADD COLUMN clob_win_rate REAL")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE deposits ADD COLUMN clob_closed_trades INTEGER")
+        except Exception:
+            pass
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS trades (
@@ -200,11 +208,17 @@ def get_wallet_scoring_data(wallet: str) -> dict:
         ).fetchone()[0]
 
         age_row = conn.execute(
-            "SELECT MIN(wallet_age_days), MAX(detected_at) FROM deposits WHERE lower(wallet_address) = ?",
+            """
+            SELECT MIN(wallet_age_days), MAX(detected_at),
+                   MAX(clob_win_rate), MAX(clob_closed_trades)
+            FROM deposits WHERE lower(wallet_address) = ?
+            """,
             (w,),
         ).fetchone()
-        wallet_age_days    = age_row[0] if age_row and age_row[0] is not None else None
+        wallet_age_days     = age_row[0] if age_row and age_row[0] is not None else None
         deposit_detected_at = age_row[1] if age_row and age_row[1] is not None else None
+        clob_win_rate       = age_row[2] if age_row and age_row[2] is not None else None
+        clob_closed_trades  = age_row[3] if age_row and age_row[3] is not None else None
 
     return {
         "wins": wins,
@@ -212,6 +226,8 @@ def get_wallet_scoring_data(wallet: str) -> dict:
         "distinct_markets": distinct,
         "wallet_age_days": wallet_age_days,
         "deposit_detected_at": deposit_detected_at,
+        "clob_win_rate": clob_win_rate,
+        "clob_closed_trades": clob_closed_trades,
     }
 
 
@@ -513,14 +529,18 @@ def save_deposit(
     amount_usdc: float,
     wallet_age_days: float,
     alert_level: str,
+    clob_win_rate: float | None = None,
+    clob_closed_trades: int | None = None,
 ):
     detected_at = datetime.now(tz=timezone.utc).isoformat()
     with get_connection() as conn:
         conn.execute(
             """
             INSERT OR IGNORE INTO deposits
-                (tx_hash, wallet_address, amount_usdc, wallet_age_days, alert_level, detected_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (tx_hash, wallet_address, amount_usdc, wallet_age_days, alert_level, detected_at,
+                 clob_win_rate, clob_closed_trades)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (tx_hash, wallet_address, amount_usdc, wallet_age_days, alert_level, detected_at),
+            (tx_hash, wallet_address, amount_usdc, wallet_age_days, alert_level, detected_at,
+             clob_win_rate, clob_closed_trades),
         )

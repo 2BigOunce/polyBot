@@ -149,4 +149,20 @@ def compute_confidence(
             log_odds -= 0.10   # liquid market — less insider-like
     # unknown liquidity: neutral
 
+    # --- Signal 8: CLOB historical win rate (cached at entry) ---
+    # Full Polymarket track record, stored in DB at wallet entry time.
+    # New wallets with no history (clob_closed_trades is None) are neutral.
+    clob_wr     = data.get("clob_win_rate")
+    clob_closed = data.get("clob_closed_trades")
+    if clob_wr is not None and clob_closed is not None and clob_closed >= 5:
+        if clob_wr < 0.35:
+            log_odds -= 0.40   # clearly bad trader
+        elif clob_wr < 0.45:
+            log_odds -= 0.20   # below average
+        elif clob_wr > 0.70 and clob_closed >= 20:
+            log_odds += 0.30   # consistently excellent
+        elif clob_wr > 0.60 and clob_closed >= 10:
+            log_odds += 0.15   # above average
+    # < 5 closed trades or unknown: neutral
+
     return _sigmoid(log_odds)

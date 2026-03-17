@@ -76,16 +76,22 @@ async def handle_deposit(
 
             flagged = False
             if amount_usdc >= ALERT_DEPOSIT_HIGH and wallet_age_days <= WALLET_AGE_HIGH:
-                if await should_reject_wallet(sender, session):
+                rejected, wr_data = await should_reject_wallet(sender, session)
+                if rejected:
                     return
-                save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "HIGH")
+                save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "HIGH",
+                             clob_win_rate=wr_data["win_rate"] if wr_data["closed"] > 0 else None,
+                             clob_closed_trades=wr_data["closed"] if wr_data["closed"] > 0 else None)
                 watched_wallets.add(sender)
                 await send_alert("🔴 HIGH", sender, amount_usdc, wallet_age_days, tx_hash)
                 flagged = True
             elif amount_usdc >= ALERT_DEPOSIT_MEDIUM and wallet_age_days <= WALLET_AGE_MEDIUM:
-                if await should_reject_wallet(sender, session):
+                rejected, wr_data = await should_reject_wallet(sender, session)
+                if rejected:
                     return
-                save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "MEDIUM")
+                save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "MEDIUM",
+                             clob_win_rate=wr_data["win_rate"] if wr_data["closed"] > 0 else None,
+                             clob_closed_trades=wr_data["closed"] if wr_data["closed"] > 0 else None)
                 watched_wallets.add(sender)
                 await send_alert("🟡 MEDIUM", sender, amount_usdc, wallet_age_days, tx_hash)
                 flagged = True
