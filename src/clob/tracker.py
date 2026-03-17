@@ -109,7 +109,12 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                     if price < MIN_INSIDER_PRICE or price > MAX_INSIDER_PRICE:
                         print(f"[clob] {wallet[:10]}… price out of range ({price:.3f}) — skipped")
                         continue
-                    await copy_trade(wallet, market, outcome, price, size, session)
+                    end_date = await _get_market_end_date(market, session)
+                    days_until = (
+                        (end_date - datetime.now(tz=timezone.utc)).total_seconds() / 86400
+                        if end_date else None
+                    )
+                    await copy_trade(wallet, market, outcome, price, size, session, days_until_resolution=days_until)
 
                 if side == "SELL" and market and price > 0:
                     # Follow the insider's exit: close our paper trade at their sell price

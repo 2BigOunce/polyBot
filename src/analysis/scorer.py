@@ -16,6 +16,7 @@ probability via the sigmoid function.
 """
 
 import math
+from datetime import datetime, timezone
 
 from src.chain.database import get_wallet_scoring_data
 
@@ -39,15 +40,19 @@ def compute_confidence(
     wallet: str,
     insider_size: float,
     market_price: float,
+    days_until_resolution: float | None = None,
+    market_liquidity: float | None = None,
 ) -> float:
     """
     Compute p̂ ∈ (0, 1) for a (wallet, trade) pair.
 
     Parameters
     ----------
-    wallet       : wallet address being copied
-    insider_size : USDC size of the insider's trade
-    market_price : current market price of the outcome (0.10 – 0.75)
+    wallet                : wallet address being copied
+    insider_size          : USDC size of the insider's trade
+    market_price          : current market price of the outcome (0.10 – 0.75)
+    days_until_resolution : days until the market resolves (None = unknown)
+    market_liquidity      : ask-side USDC liquidity in the orderbook (None = unknown)
 
     Returns
     -------
@@ -99,5 +104,49 @@ def compute_confidence(
         elif age > 90:
             log_odds -= 0.10    # old wallet, less likely to be a one-shot insider
     # unknown age: neutral
+
+    # --- Signal 5: deposit freshness (signal decay) ---
+    # On-chain deposit has a ~2h half-life. A fresh deposit is a hotter signal.
+    detected_at_str = data.get("deposit_detected_at")
+    if detected_at_str:
+        try:
+            detected_at = datetime.fromisoformat(detected_at_str)
+            hours_since = (datetime.now(tz=timezone.utc) - detected_at).total_seconds() / 3600
+            if hours_since < 0.5:
+                log_odds += 0.20   # < 30 min — very fresh
+            elif hours_since < 2.0:
+                pass               # 30 min – 2h — neutral
+            elif hours_since < 6.0:
+                log_odds -= 0.15   # cooling down
+            else:
+                log_odds -= 0.30   # cold signal — wallet been around a while
+        except (ValueError, TypeError):
+            pass  # malformed timestamp — neutral
+
+    # --- Signal 6: proximity to market resolution ---
+    # An insider betting on a market resolving soon = stronger information signal.
+    if days_until_resolution is not None:
+        if days_until_resolution <= 3:
+            log_odds += 0.40   # imminent — they know something specific
+        elif days_until_resolution <= 7:
+            log_odds += 0.20
+        elif days_until_resolution <= 30:
+            log_odds += 0.05   # near-term, slight boost
+        elif days_until_resolution > 90:
+            log_odds -= 0.10   # far future — less urgent insider bet
+    # unknown resolution date: neutral
+
+    # --- Signal 7: market liquidity (niche markets attract insiders) ---
+    # Low ask-side liquidity = thin market = more likely to be insider-driven.
+    if market_liquidity is not None:
+        if market_liquidity < 1_000:
+            log_odds += 0.40   # very niche
+        elif market_liquidity < 5_000:
+            log_odds += 0.20
+        elif market_liquidity < 20_000:
+            log_odds += 0.05
+        elif market_liquidity > 100_000:
+            log_odds -= 0.10   # liquid market — less insider-like
+    # unknown liquidity: neutral
 
     return _sigmoid(log_odds)

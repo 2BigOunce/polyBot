@@ -200,16 +200,18 @@ def get_wallet_scoring_data(wallet: str) -> dict:
         ).fetchone()[0]
 
         age_row = conn.execute(
-            "SELECT MIN(wallet_age_days) FROM deposits WHERE lower(wallet_address) = ?",
+            "SELECT MIN(wallet_age_days), MAX(detected_at) FROM deposits WHERE lower(wallet_address) = ?",
             (w,),
         ).fetchone()
-        wallet_age_days = age_row[0] if age_row and age_row[0] is not None else None
+        wallet_age_days    = age_row[0] if age_row and age_row[0] is not None else None
+        deposit_detected_at = age_row[1] if age_row and age_row[1] is not None else None
 
     return {
         "wins": wins,
         "total": total,
         "distinct_markets": distinct,
         "wallet_age_days": wallet_age_days,
+        "deposit_detected_at": deposit_detected_at,
     }
 
 
