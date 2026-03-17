@@ -231,6 +231,30 @@ def mark_wallet_status(wallet: str, status: str) -> None:
         )
 
 
+def get_poor_performing_wallets(min_closed: int = 10, max_win_rate: float = 0.40) -> list[str]:
+    """
+    Return wallets with enough closed real trades but a win rate below the threshold.
+    Used by the reaper to auto-remove consistently bad performers.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT followed_wallet,
+                   SUM(CASE WHEN status = 'won' THEN 1 ELSE 0 END) * 1.0
+                   / COUNT(*) AS win_rate,
+                   COUNT(*) AS closed
+            FROM real_trades
+            WHERE status IN ('won', 'lost')
+              AND followed_wallet IN (SELECT LOWER(wallet_address) FROM deposits WHERE status = 'active')
+            GROUP BY followed_wallet
+            HAVING closed >= ? AND win_rate < ?
+               AND COUNT(DISTINCT market) >= 3
+            """,
+            (min_closed, max_win_rate),
+        ).fetchall()
+    return [row["followed_wallet"] for row in rows]
+
+
 def get_active_wallets_flagged_before(cutoff_iso: str) -> list[str]:
     """Return distinct wallet addresses that are still 'active' and were flagged before cutoff_iso."""
     with get_connection() as conn:
