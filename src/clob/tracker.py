@@ -9,6 +9,7 @@ from src.chain.database import (
     close_paper_trade,
     get_open_paper_trade,
     get_wallet_market_stats,
+    get_wallet_status,
     get_wallet_trade_ids,
     mark_wallet_status,
     save_trade,
@@ -25,26 +26,29 @@ POLL_INTERVAL = 30   # seconds between each wallet check
 # Tracks which wallets already have a polling task running
 _active: set[str] = set()
 
-# Cache market end dates to avoid repeated /markets/{id} calls
-_market_end_date_cache: dict[str, datetime | None] = {}
+# Cache market info (end_date + is_sports) to avoid repeated /markets/{id} calls
+_market_info_cache: dict[str, dict] = {}
 
 # Count early sells at a loss per wallet — 3 triggers unreliable status
 _early_sell_counts: dict[str, int] = {}
 EARLY_SELL_LIMIT = 3
 
 
-async def _get_market_end_date(market: str, session: aiohttp.ClientSession) -> datetime | None:
-    """Fetch the resolution date of a market from CLOB (public endpoint). Cached per market."""
-    if market in _market_end_date_cache:
-        return _market_end_date_cache[market]
+async def _get_market_info(market: str, session: aiohttp.ClientSession) -> dict:
+    """Fetch end_date and tags for a market from CLOB. Cached per market."""
+    if market in _market_info_cache:
+        return _market_info_cache[market]
     try:
         async with session.get(f"{CLOB_API}/markets/{market}") as resp:
             data = await resp.json()
         raw = data.get("end_date_iso") or data.get("end_date")
-        result = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else None
+        end_date = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else None
+        is_sports = "Sports" in (data.get("tags") or [])
     except Exception:
-        result = None
-    _market_end_date_cache[market] = result
+        end_date = None
+        is_sports = False
+    result = {"end_date": end_date, "is_sports": is_sports}
+    _market_info_cache[market] = result
     return result
 
 
@@ -55,6 +59,8 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
     # Pre-populate from DB so we don't re-alert on trades already processed
     seen_tx: set[str] = get_wallet_trade_ids(wallet)
     is_first_poll = True  # first fetch bootstraps seen_tx silently for any remaining history
+
+    is_watch_only = get_wallet_status(wallet) == "watch_only"
 
     while True:
         try:
@@ -92,29 +98,34 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                 if is_first_poll:
                     continue
 
-                # Super alert: concentrated wallet betting on a single market
+                # Super alert: concentrated wallet betting heavily on a single market
                 if side == "BUY" and market and MIN_INSIDER_PRICE < price < MAX_INSIDER_PRICE:
                     stats = get_wallet_market_stats(wallet, market)
-                    if stats["distinct_markets"] == 1 and stats["buys_on_market"] >= 2:
-                        print(f"[clob] 🚨 SUPER ALERT {wallet[:10]}… {outcome} @ {price:.3f} | {size:.0f} USDC")
+                    total_buys = stats["total_buys"]
+                    concentration = stats["buys_on_market"] / total_buys if total_buys > 0 else 0
+                    if stats["buys_on_market"] >= 2 and concentration >= 0.60:
+                        print(f"[clob] 🚨 SUPER ALERT {wallet[:10]}… {outcome} @ {price:.3f} | {size:.0f} USDC | conc {concentration:.0%}")
                         await send_super_alert(
                             wallet, market, outcome, price, size,
                             stats["max_deposit"], stats["buys_on_market"],
                         )
 
-                if side == "BUY" and market and price > 0:
+                if side == "BUY" and market and price > 0 and not is_watch_only:
                     if size < MIN_INSIDER_TRADE_SIZE:
                         print(f"[clob] {wallet[:10]}… trade too small ({size:.0f} USDC) — skipped")
                         continue
                     if price < MIN_INSIDER_PRICE or price > MAX_INSIDER_PRICE:
                         print(f"[clob] {wallet[:10]}… price out of range ({price:.3f}) — skipped")
                         continue
-                    end_date = await _get_market_end_date(market, session)
+                    info = await _get_market_info(market, session)
+                    end_date = info["end_date"]
+                    is_sports = info["is_sports"]
                     days_until = (
                         (end_date - datetime.now(tz=timezone.utc)).total_seconds() / 86400
                         if end_date else None
                     )
-                    await copy_trade(wallet, market, outcome, price, size, session, days_until_resolution=days_until)
+                    await copy_trade(wallet, market, outcome, price, size, session,
+                                     days_until_resolution=days_until, is_sports=is_sports)
 
                 if side == "SELL" and market and price > 0:
                     # Follow the insider's exit: close our paper trade at their sell price
@@ -130,7 +141,8 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
 
                     # Unreliable check: selling far before resolution = bad signal
                     # Requires EARLY_SELL_LIMIT consecutive early-loss sells before marking unreliable
-                    end_date = await _get_market_end_date(market, session)
+                    info = await _get_market_info(market, session)
+                    end_date = info["end_date"]
                     if end_date:
                         now = datetime.now(tz=timezone.utc)
                         hours_until_end = (end_date - now).total_seconds() / 3600

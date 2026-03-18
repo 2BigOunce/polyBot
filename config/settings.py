@@ -36,6 +36,7 @@ POLYMARKET_CONTRACTS = [CTF_EXCHANGE, NEG_RISK_EXCHANGE, NEG_RISK_ADAPTER]
 
 ALERT_DEPOSIT_HIGH = 15_000   # USDC — wallet < 1 day old
 ALERT_DEPOSIT_MEDIUM = 8_000  # USDC — wallet < 5 days old
+ALERT_DEPOSIT_SUPER = 3_000   # USDC — wallet < 5 days old — super alert only, no copy trade
 WALLET_AGE_HIGH = 1           # days
 WALLET_AGE_MEDIUM = 5         # days
 
@@ -65,4 +66,5 @@ REAL_MAX_POSITION_PCT   = float(os.getenv("REAL_MAX_POSITION_PCT", "0.10"))  # 1
 REAL_MAX_PRICE_DRIFT        = float(os.getenv("REAL_MAX_PRICE_DRIFT", "0.15"))       # skip if price moved >15%
 REAL_MIN_LIQUIDITY          = float(os.getenv("REAL_MIN_LIQUIDITY", "500"))           # USDC — min ask-side volume before placing order
 REAL_MAX_MARKET_EXPOSURE    = float(os.getenv("REAL_MAX_MARKET_EXPOSURE", "50"))      # USDC — max total open per market/outcome across all wallets
+REAL_MAX_SPORTS_EXPOSURE_PCT = float(os.getenv("REAL_MAX_SPORTS_EXPOSURE_PCT", "0.20")) # max % of balance open on sports markets
 REAL_MIN_EDGE               = float(os.getenv("REAL_MIN_EDGE", "0.02"))               # minimum p̂ - price edge required to enter a trade

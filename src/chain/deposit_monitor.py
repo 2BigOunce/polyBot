@@ -8,6 +8,7 @@ from web3 import AsyncWeb3
 from config.settings import (
     ALERT_DEPOSIT_HIGH,
     ALERT_DEPOSIT_MEDIUM,
+    ALERT_DEPOSIT_SUPER,
     POLYMARKET_CONTRACTS,
     RPC_URL,
     USDC_ADDRESS,
@@ -95,6 +96,11 @@ async def handle_deposit(
                 watched_wallets.add(sender)
                 await send_alert("🟡 MEDIUM", sender, amount_usdc, wallet_age_days, tx_hash)
                 flagged = True
+            elif amount_usdc >= ALERT_DEPOSIT_SUPER and wallet_age_days <= WALLET_AGE_MEDIUM:
+                save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "SUPER",
+                             status="watch_only")
+                watched_wallets.add(sender)
+                print(f"[deposit] 👁 SUPER {sender} | {amount_usdc:.0f} USDC | age {wallet_age_days:.1f}d — watch only")
 
             if flagged:
                 funders = await get_funders(sender, session)

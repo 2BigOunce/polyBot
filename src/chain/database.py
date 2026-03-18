@@ -81,9 +81,14 @@ def init_db():
                 entered_at      TEXT NOT NULL,
                 status          TEXT NOT NULL DEFAULT 'open',
                 pnl             REAL,
-                closed_at       TEXT
+                closed_at       TEXT,
+                is_sports       INTEGER NOT NULL DEFAULT 0
             )
         """)
+        try:
+            conn.execute("ALTER TABLE real_trades ADD COLUMN is_sports INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS super_alerts (
@@ -146,12 +151,16 @@ def get_wallet_market_stats(wallet: str, market: str) -> dict:
             "SELECT COUNT(*) FROM trades WHERE wallet = ? AND market = ? AND side = 'BUY'",
             (wallet.lower(), market),
         ).fetchone()[0]
+        total_buys = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE wallet = ? AND side = 'BUY'",
+            (wallet.lower(),),
+        ).fetchone()[0]
         row = conn.execute(
             "SELECT COALESCE(MAX(amount_usdc), 0) FROM deposits WHERE wallet_address = ?",
             (wallet.lower(),),
         ).fetchone()
         max_deposit = row[0] if row else 0
-    return {"distinct_markets": distinct, "buys_on_market": buys, "max_deposit": max_deposit}
+    return {"distinct_markets": distinct, "buys_on_market": buys, "total_buys": total_buys, "max_deposit": max_deposit}
 
 
 def get_wallets_latest_buy(wallets: list[str]) -> dict[str, dict]:
@@ -238,6 +247,16 @@ def get_wallet_trade_ids(wallet: str) -> set[str]:
             "SELECT trade_id FROM trades WHERE wallet = ?", (wallet.lower(),)
         ).fetchall()
     return {row["trade_id"] for row in rows}
+
+
+def get_wallet_status(wallet: str) -> str | None:
+    """Return the status of a wallet's most recent deposit row, or None if not found."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT status FROM deposits WHERE lower(wallet_address) = ? ORDER BY detected_at DESC LIMIT 1",
+            (wallet.lower(),),
+        ).fetchone()
+    return row["status"] if row else None
 
 
 def mark_wallet_status(wallet: str, status: str) -> None:
@@ -418,6 +437,15 @@ def get_real_pnl_summary() -> dict:
     }
 
 
+def get_sports_open_exposure() -> float:
+    """Return total USDC currently open on sports markets."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(size_usdc), 0) FROM real_trades WHERE status = 'open' AND is_sports = 1"
+        ).fetchone()
+    return float(row[0])
+
+
 def save_real_trade(
     followed_wallet: str,
     market: str,
@@ -427,16 +455,17 @@ def save_real_trade(
     fill_price: float,
     size_usdc: float,
     order_id: str,
+    is_sports: bool = False,
 ) -> int:
     entered_at = datetime.now(tz=timezone.utc).isoformat()
     with get_connection() as conn:
         cur = conn.execute(
             """
             INSERT INTO real_trades
-                (followed_wallet, market, outcome, token_id, insider_price, fill_price, size_usdc, order_id, entered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (followed_wallet, market, outcome, token_id, insider_price, fill_price, size_usdc, order_id, entered_at, is_sports)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (followed_wallet.lower(), market, outcome, token_id, insider_price, fill_price, size_usdc, order_id, entered_at),
+            (followed_wallet.lower(), market, outcome, token_id, insider_price, fill_price, size_usdc, order_id, entered_at, int(is_sports)),
         )
         return cur.lastrowid
 
@@ -531,6 +560,7 @@ def save_deposit(
     alert_level: str,
     clob_win_rate: float | None = None,
     clob_closed_trades: int | None = None,
+    status: str = "active",
 ):
     detected_at = datetime.now(tz=timezone.utc).isoformat()
     with get_connection() as conn:
@@ -538,9 +568,9 @@ def save_deposit(
             """
             INSERT OR IGNORE INTO deposits
                 (tx_hash, wallet_address, amount_usdc, wallet_age_days, alert_level, detected_at,
-                 clob_win_rate, clob_closed_trades)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 clob_win_rate, clob_closed_trades, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (tx_hash, wallet_address, amount_usdc, wallet_age_days, alert_level, detected_at,
-             clob_win_rate, clob_closed_trades),
+             clob_win_rate, clob_closed_trades, status),
         )
