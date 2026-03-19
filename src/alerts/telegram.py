@@ -110,6 +110,25 @@ async def send_real_sell(
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
 
 
+async def send_follow_alert(
+    wallet: str,
+    question: str,
+    outcome: str,
+    price: float,
+    size: float,
+):
+    short = f"{wallet[:6]}…{wallet[-4:]}"
+    message = (
+        f"👁 FOLLOWED WALLET\n"
+        f"Wallet: {short}\n"
+        f"Market: {question}\n"
+        f"Side: BUY | {outcome} @ {price:.3f}\n"
+        f"Size: {size:.0f} USDC"
+    )
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
+
+
 async def send_cluster_alert(wallet: str, cluster: list[str]):
     all_wallets = [wallet] + cluster
     latest_buys = get_wallets_latest_buy(all_wallets)

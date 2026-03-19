@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import aiohttp
 
 from config.settings import EARLY_SELL_HOURS, MAX_INSIDER_PRICE, MIN_INSIDER_PRICE, MIN_INSIDER_TRADE_SIZE
-from src.alerts.telegram import send_alert, send_super_alert  # noqa: F401
+from src.alerts.telegram import send_alert, send_follow_alert, send_super_alert  # noqa: F401
 from src.chain.database import (
     close_paper_trade,
     get_open_paper_trade,
@@ -35,7 +35,7 @@ EARLY_SELL_LIMIT = 3
 
 
 async def _get_market_info(market: str, session: aiohttp.ClientSession) -> dict:
-    """Fetch end_date and tags for a market from CLOB. Cached per market."""
+    """Fetch end_date, tags and question for a market from CLOB. Cached per market."""
     if market in _market_info_cache:
         return _market_info_cache[market]
     try:
@@ -44,10 +44,12 @@ async def _get_market_info(market: str, session: aiohttp.ClientSession) -> dict:
         raw = data.get("end_date_iso") or data.get("end_date")
         end_date = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else None
         is_sports = "Sports" in (data.get("tags") or [])
+        question = data.get("question") or market[:20]
     except Exception:
         end_date = None
         is_sports = False
-    result = {"end_date": end_date, "is_sports": is_sports}
+        question = market[:20]
+    result = {"end_date": end_date, "is_sports": is_sports, "question": question}
     _market_info_cache[market] = result
     return result
 
@@ -60,7 +62,9 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
     seen_tx: set[str] = get_wallet_trade_ids(wallet)
     is_first_poll = True  # first fetch bootstraps seen_tx silently for any remaining history
 
-    is_watch_only = get_wallet_status(wallet) == "watch_only"
+    wallet_status = get_wallet_status(wallet)
+    is_watch_only  = wallet_status == "watch_only"
+    is_follow_only = wallet_status == "follow_only"
 
     while True:
         try:
@@ -110,7 +114,13 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                             stats["max_deposit"], stats["buys_on_market"],
                         )
 
-                if side == "BUY" and market and price > 0 and not is_watch_only:
+                # follow_only: alert on every BUY, no copy trade
+                if side == "BUY" and market and is_follow_only:
+                    info = await _get_market_info(market, session)
+                    print(f"[clob] 👁 FOLLOW {wallet[:10]}… {outcome} @ {price:.3f} | {size:.0f} USDC")
+                    await send_follow_alert(wallet, info["question"], outcome, price, size)
+
+                if side == "BUY" and market and price > 0 and not is_watch_only and not is_follow_only:
                     if size < MIN_INSIDER_TRADE_SIZE:
                         print(f"[clob] {wallet[:10]}… trade too small ({size:.0f} USDC) — skipped")
                         continue
