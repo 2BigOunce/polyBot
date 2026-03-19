@@ -437,6 +437,23 @@ def get_real_pnl_summary() -> dict:
     }
 
 
+def get_wallet_sports_winrate(wallet: str) -> tuple[float, int]:
+    """Return (win_rate, resolved_count) for sports trades of a given wallet."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT
+                COUNT(*) as resolved,
+                SUM(CASE WHEN status='won' THEN 1 ELSE 0 END) as wins
+               FROM real_trades
+               WHERE lower(followed_wallet) = ? AND is_sports = 1 AND status IN ('won', 'lost')""",
+            (wallet.lower(),),
+        ).fetchone()
+    resolved = row["resolved"] or 0
+    wins = row["wins"] or 0
+    win_rate = wins / resolved if resolved > 0 else 0.0
+    return win_rate, resolved
+
+
 def get_sports_open_exposure() -> float:
     """Return total USDC currently open on sports markets."""
     with get_connection() as conn:

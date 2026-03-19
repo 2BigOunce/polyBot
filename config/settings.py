@@ -68,3 +68,6 @@ REAL_MIN_LIQUIDITY          = float(os.getenv("REAL_MIN_LIQUIDITY", "500"))     
 REAL_MAX_MARKET_EXPOSURE    = float(os.getenv("REAL_MAX_MARKET_EXPOSURE", "50"))      # USDC — max total open per market/outcome across all wallets
 REAL_MAX_SPORTS_EXPOSURE_PCT = float(os.getenv("REAL_MAX_SPORTS_EXPOSURE_PCT", "0.20")) # max % of balance open on sports markets
 REAL_MIN_EDGE               = float(os.getenv("REAL_MIN_EDGE", "0.02"))               # minimum p̂ - price edge required to enter a trade
+REAL_SPORTS_MIN_WINRATE     = float(os.getenv("REAL_SPORTS_MIN_WINRATE", "0.60"))     # sports wallets: min historical win rate (if >= min trades)
+REAL_SPORTS_MIN_PHAT        = float(os.getenv("REAL_SPORTS_MIN_PHAT", "0.60"))        # sports wallets: min scorer confidence (fallback if not enough history)
+REAL_SPORTS_MIN_TRADES      = int(os.getenv("REAL_SPORTS_MIN_TRADES", "10"))          # min resolved sports trades to use WR filter
