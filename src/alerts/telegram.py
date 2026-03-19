@@ -8,6 +8,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler, ConversationHandler, MessageHandler, filters
 
 from src.chain.database import (
+    add_wallet_manually,
     get_follow_only_wallets,
     get_follow_wallet_open_positions,
     get_pnl_summary,
@@ -18,6 +19,7 @@ from src.chain.database import (
     save_super_alert,
     set_wallet_alias,
 )
+from src.clob import watched_wallets
 
 
 def format_age(wallet_age_days: float) -> str:
@@ -222,22 +224,48 @@ async def _realpnl_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) 
 
 
 _AWAITING_RENAME = 1
+_AWAITING_ADD_ADDRESS = 2
+_AWAITING_ADD_MODE = 3
+
+_STATUS_LABELS = {"follow": "follow_only", "copy": "active", "watch": "watch_only"}
+
+
+def _do_add_wallet(wallet: str, status: str) -> str:
+    """Insert wallet in DB and add to live watchlist. Returns confirmation message."""
+    add_wallet_manually(wallet, status)
+    watched_wallets.add(wallet)
+    label = {"follow_only": "follow only", "active": "copy trade", "watch_only": "watch only"}.get(status, status)
+    return f"✅ Added {wallet[:6]}…{wallet[-4:]} as {label}"
 
 
 def _wallet_label(w: dict) -> str:
     return w["alias"] or f"{w['wallet'][:6]}…{w['wallet'][-4:]}"
 
 
+async def _add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/add <address> [follow|copy|watch]"""
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("Usage: /add <address> [follow|copy|watch]\nDefault mode: follow")
+        return
+    wallet = args[0].strip()
+    if not wallet.startswith("0x") or len(wallet) < 10:
+        await update.message.reply_text("❌ Invalid address.")
+        return
+    mode = args[1].lower() if len(args) > 1 else "follow"
+    status = _STATUS_LABELS.get(mode, "follow_only")
+    await update.message.reply_text(_do_add_wallet(wallet, status))
+
+
+def _followed_keyboard(wallets: list) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(_wallet_label(w), callback_data=f"fw:{w['wallet']}")] for w in wallets]
+    rows.append([InlineKeyboardButton("➕ Add wallet", callback_data="fw_add")])
+    return InlineKeyboardMarkup(rows)
+
+
 async def _followed_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     wallets = get_follow_only_wallets()
-    if not wallets:
-        await update.message.reply_text("No followed wallets.")
-        return
-    keyboard = [
-        [InlineKeyboardButton(_wallet_label(w), callback_data=f"fw:{w['wallet']}")]
-        for w in wallets
-    ]
-    await update.message.reply_text("👁 Followed wallets:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("👁 Followed wallets:", reply_markup=_followed_keyboard(wallets))
 
 
 async def _fw_wallet_cb(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -289,15 +317,45 @@ async def _fw_rename_received(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
+async def _fw_add_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    await q.answer()
+    context.user_data["add_msg_id"] = q.message.message_id
+    await q.edit_message_text("Send the wallet address to add:")
+    return _AWAITING_ADD_ADDRESS
+
+
+async def _fw_add_address_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    wallet = update.message.text.strip()
+    if not wallet.startswith("0x") or len(wallet) < 10:
+        await update.message.reply_text("❌ Invalid address. Try again:")
+        return _AWAITING_ADD_ADDRESS
+    context.user_data["adding_wallet"] = wallet
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("👁 Follow",  callback_data="fw_mode:follow_only"),
+        InlineKeyboardButton("📋 Copy",    callback_data="fw_mode:active"),
+        InlineKeyboardButton("🔭 Watch",   callback_data="fw_mode:watch_only"),
+    ]])
+    await update.message.reply_text(f"Mode for {wallet[:6]}…{wallet[-4:]}?", reply_markup=keyboard)
+    return _AWAITING_ADD_MODE
+
+
+async def _fw_add_mode_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    await q.answer()
+    wallet = context.user_data.pop("adding_wallet", None)
+    if not wallet:
+        return ConversationHandler.END
+    status = q.data.split(":", 1)[1]
+    await q.edit_message_text(_do_add_wallet(wallet, status))
+    return ConversationHandler.END
+
+
 async def _fw_back_cb(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     await q.answer()
     wallets = get_follow_only_wallets()
-    keyboard = [
-        [InlineKeyboardButton(_wallet_label(w), callback_data=f"fw:{w['wallet']}")]
-        for w in wallets
-    ]
-    await q.edit_message_text("👁 Followed wallets:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await q.edit_message_text("👁 Followed wallets:", reply_markup=_followed_keyboard(wallets))
 
 
 async def run_bot() -> None:
@@ -306,6 +364,7 @@ async def run_bot() -> None:
     app.add_handler(CommandHandler("pnl", _pnl_command))
     app.add_handler(CommandHandler("realpnl", _realpnl_command))
     app.add_handler(CommandHandler("superalerts", _superalerts_command))
+    app.add_handler(CommandHandler("add", _add_command))
     app.add_handler(CommandHandler("followed", _followed_command))
     app.add_handler(CallbackQueryHandler(_fw_wallet_cb,    pattern=r"^fw:[^_]"))
     app.add_handler(CallbackQueryHandler(_fw_positions_cb, pattern=r"^fw_pos:"))
@@ -313,6 +372,14 @@ async def run_bot() -> None:
     app.add_handler(ConversationHandler(
         entry_points=[CallbackQueryHandler(_fw_rename_cb, pattern=r"^fw_rename:")],
         states={_AWAITING_RENAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, _fw_rename_received)]},
+        fallbacks=[],
+    ))
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(_fw_add_cb, pattern=r"^fw_add$")],
+        states={
+            _AWAITING_ADD_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, _fw_add_address_received)],
+            _AWAITING_ADD_MODE:    [CallbackQueryHandler(_fw_add_mode_cb, pattern=r"^fw_mode:")],
+        },
         fallbacks=[],
     ))
     await app.initialize()

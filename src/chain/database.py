@@ -451,6 +451,25 @@ def get_real_pnl_summary() -> dict:
     }
 
 
+def add_wallet_manually(wallet: str, status: str) -> bool:
+    """Insert a wallet manually. Returns True if inserted, False if already exists."""
+    tx_hash = f"manual-{wallet[:20].lower()}"
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO deposits
+               (tx_hash, wallet_address, amount_usdc, wallet_age_days, alert_level, detected_at, status)
+               VALUES (?, ?, 0, 0, 'MANUAL', datetime('now'), ?)""",
+            (tx_hash, wallet, status),
+        )
+        if cur.rowcount == 0:
+            # Already exists — just update status
+            conn.execute(
+                "UPDATE deposits SET status = ? WHERE lower(wallet_address) = ?",
+                (status, wallet.lower()),
+            )
+        return cur.rowcount > 0
+
+
 def get_follow_only_wallets() -> list[dict]:
     """Return all follow_only wallets with their alias."""
     with get_connection() as conn:
