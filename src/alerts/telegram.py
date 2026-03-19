@@ -383,6 +383,13 @@ async def run_bot() -> None:
         fallbacks=[],
     ))
     await app.initialize()
+    await app.bot.set_my_commands([
+        ("pnl",         "Paper trading P&L summary"),
+        ("realpnl",     "Real trading P&L summary"),
+        ("superalerts", "Last 5 super alerts"),
+        ("followed",    "Manage followed wallets"),
+        ("add",         "Add a wallet: /add <address> [follow|copy|watch]"),
+    ])
     await app.start()
     await app.updater.start_polling()
     await asyncio.Event().wait()  # run forever alongside other coroutines
