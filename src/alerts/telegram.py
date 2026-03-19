@@ -13,6 +13,7 @@ from src.chain.database import (
     get_pnl_summary,
     get_real_pnl_summary,
     get_recent_super_alerts,
+    get_wallet_alias,
     get_wallets_latest_buy,
     save_super_alert,
     set_wallet_alias,
@@ -129,7 +130,8 @@ async def send_follow_alert(
     price: float,
     size: float,
 ):
-    short = f"{wallet[:6]}…{wallet[-4:]}"
+    alias = get_wallet_alias(wallet)
+    short = alias or f"{wallet[:6]}…{wallet[-4:]}"
     message = (
         f"👁 FOLLOWED WALLET\n"
         f"Wallet: {short}\n"

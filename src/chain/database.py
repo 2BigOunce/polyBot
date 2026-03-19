@@ -263,6 +263,16 @@ def get_wallet_status(wallet: str) -> str | None:
     return row["status"] if row else None
 
 
+def get_wallet_alias(wallet: str) -> str | None:
+    """Return the alias for a wallet, or None if not set."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT alias FROM deposits WHERE lower(wallet_address) = ? ORDER BY detected_at DESC LIMIT 1",
+            (wallet.lower(),),
+        ).fetchone()
+    return row["alias"] if row else None
+
+
 def mark_wallet_status(wallet: str, status: str) -> None:
     """Update the status of all deposit rows for a wallet."""
     with get_connection() as conn:
