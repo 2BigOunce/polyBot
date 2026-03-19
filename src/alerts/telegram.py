@@ -4,7 +4,19 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from src.chain.database import get_pnl_summary, get_real_pnl_summary, get_recent_super_alerts, get_wallets_latest_buy, save_super_alert
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackQueryHandler, ConversationHandler, MessageHandler, filters
+
+from src.chain.database import (
+    get_follow_only_wallets,
+    get_follow_wallet_open_positions,
+    get_pnl_summary,
+    get_real_pnl_summary,
+    get_recent_super_alerts,
+    get_wallets_latest_buy,
+    save_super_alert,
+    set_wallet_alias,
+)
 
 
 def format_age(wallet_age_days: float) -> str:
@@ -207,12 +219,100 @@ async def _realpnl_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text("\n".join(lines))
 
 
+_AWAITING_RENAME = 1
+
+
+def _wallet_label(w: dict) -> str:
+    return w["alias"] or f"{w['wallet'][:6]}…{w['wallet'][-4:]}"
+
+
+async def _followed_command(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    wallets = get_follow_only_wallets()
+    if not wallets:
+        await update.message.reply_text("No followed wallets.")
+        return
+    keyboard = [
+        [InlineKeyboardButton(_wallet_label(w), callback_data=f"fw:{w['wallet']}")]
+        for w in wallets
+    ]
+    await update.message.reply_text("👁 Followed wallets:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _fw_wallet_cb(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    await q.answer()
+    wallet = q.data.split(":", 1)[1]
+    short = f"{wallet[:6]}…{wallet[-4:]}"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Positions", callback_data=f"fw_pos:{wallet}")],
+        [InlineKeyboardButton("✏️ Rename",    callback_data=f"fw_rename:{wallet}")],
+        [InlineKeyboardButton("« Back",       callback_data="fw_back")],
+    ])
+    await q.edit_message_text(f"Wallet: {short}", reply_markup=keyboard)
+
+
+async def _fw_positions_cb(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    await q.answer()
+    wallet = q.data.split(":", 1)[1]
+    positions = get_follow_wallet_open_positions(wallet)
+    if not positions:
+        await q.edit_message_text("No open positions.")
+        return
+    lines = [f"📊 Open positions — {wallet[:6]}…{wallet[-4:]}"]
+    for p in positions:
+        lines.append(
+            f"\n{p['outcome']} @ {p['price']:.3f} | {p['size']:.0f} USDC\n"
+            f"Market: {p['market'][:24]}…"
+        )
+    await q.edit_message_text("\n".join(lines))
+
+
+async def _fw_rename_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    await q.answer()
+    wallet = q.data.split(":", 1)[1]
+    context.user_data["renaming_wallet"] = wallet
+    await q.edit_message_text(f"Send the new name for {wallet[:6]}…{wallet[-4:]}:")
+    return _AWAITING_RENAME
+
+
+async def _fw_rename_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    wallet = context.user_data.pop("renaming_wallet", None)
+    if not wallet:
+        return ConversationHandler.END
+    alias = update.message.text.strip()
+    set_wallet_alias(wallet, alias)
+    await update.message.reply_text(f"✅ Renamed to '{alias}'")
+    return ConversationHandler.END
+
+
+async def _fw_back_cb(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    await q.answer()
+    wallets = get_follow_only_wallets()
+    keyboard = [
+        [InlineKeyboardButton(_wallet_label(w), callback_data=f"fw:{w['wallet']}")]
+        for w in wallets
+    ]
+    await q.edit_message_text("👁 Followed wallets:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
 async def run_bot() -> None:
     """Start the Telegram bot and listen for commands."""
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("pnl", _pnl_command))
     app.add_handler(CommandHandler("realpnl", _realpnl_command))
     app.add_handler(CommandHandler("superalerts", _superalerts_command))
+    app.add_handler(CommandHandler("followed", _followed_command))
+    app.add_handler(CallbackQueryHandler(_fw_wallet_cb,    pattern=r"^fw:[^_]"))
+    app.add_handler(CallbackQueryHandler(_fw_positions_cb, pattern=r"^fw_pos:"))
+    app.add_handler(CallbackQueryHandler(_fw_back_cb,      pattern=r"^fw_back$"))
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(_fw_rename_cb, pattern=r"^fw_rename:")],
+        states={_AWAITING_RENAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, _fw_rename_received)]},
+        fallbacks=[],
+    ))
     await app.initialize()
     await app.start()
     await app.updater.start_polling()

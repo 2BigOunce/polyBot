@@ -38,6 +38,10 @@ def init_db():
             conn.execute("ALTER TABLE deposits ADD COLUMN clob_closed_trades INTEGER")
         except Exception:
             pass
+        try:
+            conn.execute("ALTER TABLE deposits ADD COLUMN alias TEXT")
+        except Exception:
+            pass
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS trades (
@@ -435,6 +439,50 @@ def get_real_pnl_summary() -> dict:
         "open_exposure": open_[1],
         "best_trade": dict(best) if best else None,
     }
+
+
+def get_follow_only_wallets() -> list[dict]:
+    """Return all follow_only wallets with their alias."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT wallet_address, alias
+               FROM deposits
+               WHERE status = 'follow_only'
+               ORDER BY detected_at DESC"""
+        ).fetchall()
+    return [{"wallet": r["wallet_address"], "alias": r["alias"]} for r in rows]
+
+
+def set_wallet_alias(wallet: str, alias: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE deposits SET alias = ? WHERE lower(wallet_address) = ?",
+            (alias, wallet.lower()),
+        )
+
+
+def get_follow_wallet_open_positions(wallet: str) -> list[dict]:
+    """
+    Return open BUY positions for a follow_only wallet.
+    A position is open if there is no SELL for the same market+outcome after the BUY.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT t.trade_id, t.market, t.outcome, t.size, t.price, t.match_time
+               FROM trades t
+               WHERE t.wallet = ? AND t.side = 'BUY'
+               AND NOT EXISTS (
+                   SELECT 1 FROM trades t2
+                   WHERE t2.wallet = t.wallet
+                     AND t2.market = t.market
+                     AND t2.outcome = t.outcome
+                     AND t2.side = 'SELL'
+                     AND t2.match_time > t.match_time
+               )
+               ORDER BY t.match_time DESC""",
+            (wallet.lower(),),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_wallet_sports_winrate(wallet: str) -> tuple[float, int]:
