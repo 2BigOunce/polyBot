@@ -230,12 +230,15 @@ _AWAITING_ADD_MODE = 3
 _STATUS_LABELS = {"follow": "follow_only", "copy": "active", "watch": "watch_only"}
 
 
-def _do_add_wallet(wallet: str, status: str) -> str:
+def _do_add_wallet(wallet: str, status: str, alias: str | None = None) -> str:
     """Insert wallet in DB and add to live watchlist. Returns confirmation message."""
     add_wallet_manually(wallet, status)
+    if alias:
+        set_wallet_alias(wallet, alias)
     watched_wallets.add(wallet)
     label = {"follow_only": "follow only", "active": "copy trade", "watch_only": "watch only"}.get(status, status)
-    return f"✅ Added {wallet[:6]}…{wallet[-4:]} as {label}"
+    name = alias or f"{wallet[:6]}…{wallet[-4:]}"
+    return f"✅ Added {name} as {label}"
 
 
 def _wallet_label(w: dict) -> str:
@@ -243,18 +246,25 @@ def _wallet_label(w: dict) -> str:
 
 
 async def _add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/add <address> [follow|copy|watch]"""
+    """/add <address> [follow|copy|watch] ["name"]"""
     args = context.args or []
     if not args:
-        await update.message.reply_text("Usage: /add <address> [follow|copy|watch]\nDefault mode: follow")
+        await update.message.reply_text('Usage: /add <address> [follow|copy|watch] ["name"]\nDefault mode: follow')
         return
     wallet = args[0].strip()
     if not wallet.startswith("0x") or len(wallet) < 10:
         await update.message.reply_text("❌ Invalid address.")
         return
-    mode = args[1].lower() if len(args) > 1 else "follow"
+    rest = args[1:]
+    mode = "follow"
+    if rest and rest[0].lower() in _STATUS_LABELS:
+        mode = rest[0].lower()
+        alias_parts = rest[1:]
+    else:
+        alias_parts = rest
+    alias = " ".join(alias_parts).strip('"\'') or None
     status = _STATUS_LABELS.get(mode, "follow_only")
-    await update.message.reply_text(_do_add_wallet(wallet, status))
+    await update.message.reply_text(_do_add_wallet(wallet, status, alias))
 
 
 def _followed_keyboard(wallets: list) -> InlineKeyboardMarkup:
