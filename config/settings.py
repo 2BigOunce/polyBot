@@ -71,3 +71,8 @@ REAL_MIN_EDGE               = float(os.getenv("REAL_MIN_EDGE", "0.02"))         
 REAL_SPORTS_MIN_WINRATE     = float(os.getenv("REAL_SPORTS_MIN_WINRATE", "0.60"))     # sports wallets: min historical win rate (if >= min trades)
 REAL_SPORTS_MIN_PHAT        = float(os.getenv("REAL_SPORTS_MIN_PHAT", "0.60"))        # sports wallets: min scorer confidence (fallback if not enough history)
 REAL_SPORTS_MIN_TRADES      = int(os.getenv("REAL_SPORTS_MIN_TRADES", "10"))          # min resolved sports trades to use WR filter
+
+# --- Insider entry filter ---
+INSIDER_MAX_MARKETS    = int(os.getenv("INSIDER_MAX_MARKETS", "3"))     # reject if wallet traded > N distinct markets (90d)
+INSIDER_MAX_SPORTS_PCT = float(os.getenv("INSIDER_MAX_SPORTS_PCT", "0.30"))  # reject if > 30% of trades are sports
+INSIDER_PENDING_TRADES = int(os.getenv("INSIDER_PENDING_TRADES", "3"))  # alert when a 0-history wallet reaches N trades

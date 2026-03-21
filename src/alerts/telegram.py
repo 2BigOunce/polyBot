@@ -72,6 +72,55 @@ async def send_super_alert(
     await bot.pin_chat_message(chat_id=TELEGRAM_CHAT_ID, message_id=msg.message_id, disable_notification=True)
 
 
+async def send_watchonly_alert(
+    wallet: str,
+    amount_usdc: float,
+    wallet_age_days: float,
+    alert_level: str,
+    stats: dict,
+):
+    """Alert for a new watch_only wallet that has existing CLOB history."""
+    age_str = format_age(wallet_age_days)
+    tier_emoji = {"HIGH": "🔴", "MEDIUM": "🟡", "SUPER": "🟠"}.get(alert_level, "👁")
+    sports_str = f"{stats['sports_pct']:.0%}" if stats.get("sports_pct") else "0%"
+    markets_str = f"{stats['distinct_markets']}"
+    trades_str  = str(stats.get("trades_count", 0))
+    message = (
+        f"{tier_emoji} Potential Insider — {alert_level}\n"
+        f"Wallet: {wallet}\n"
+        f"Deposit: {amount_usdc:,.0f} USDC | Age: {age_str}\n"
+        f"Activity (90d): {trades_str} buys | {markets_str} markets | {sports_str} sports\n"
+        f"\n→ /add {wallet} copy"
+    )
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+
+async def send_watchonly_3rd_trade_alert(
+    wallet: str,
+    amount_usdc: float,
+    wallet_age_days: float,
+    alert_level: str,
+    trades: list[dict],
+):
+    """Alert sent when a 0-history watch_only wallet reaches its 3rd BUY trade."""
+    age_str = format_age(wallet_age_days)
+    tier_emoji = {"HIGH": "🔴", "MEDIUM": "🟡", "SUPER": "🟠"}.get(alert_level, "👁")
+    trades_lines = "\n".join(
+        f"  • {t.get('outcome', '?')} @ {float(t.get('price', 0)):.3f} | {float(t.get('size', 0)):.0f} USDC"
+        for t in trades[-3:]
+    )
+    message = (
+        f"{tier_emoji} Wallet Active — {alert_level} (3rd trade)\n"
+        f"Wallet: {wallet}\n"
+        f"Deposit: {amount_usdc:,.0f} USDC | Age: {age_str}\n"
+        f"Last trades:\n{trades_lines}\n"
+        f"\n→ /add {wallet} copy"
+    )
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
+
 async def send_paper_buy(*args, **kwargs):
     pass  # paper notifications disabled
 

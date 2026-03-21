@@ -4,11 +4,13 @@ from datetime import datetime, timezone
 import aiohttp
 
 from config.settings import EARLY_SELL_HOURS, MAX_INSIDER_PRICE, MIN_INSIDER_PRICE, MIN_INSIDER_TRADE_SIZE
-from src.alerts.telegram import send_alert, send_follow_alert, send_super_alert  # noqa: F401
+from src.alerts.telegram import send_follow_alert, send_super_alert, send_watchonly_3rd_trade_alert  # noqa: F401
 from src.chain.database import (
     close_paper_trade,
+    get_deposit_amount,
     get_open_paper_trade,
     get_wallet_market_stats,
+    get_wallet_scoring_data,
     get_wallet_status,
     get_wallet_trade_ids,
     mark_wallet_status,
@@ -32,6 +34,10 @@ _market_info_cache: dict[str, dict] = {}
 # Count early sells at a loss per wallet — 3 triggers unreliable status
 _early_sell_counts: dict[str, int] = {}
 EARLY_SELL_LIMIT = 3
+
+# Track 0-history watch_only wallets waiting for their 3rd trade
+# wallet → list of trade dicts (BUY only, accumulated since bot start)
+_pending_alert: dict[str, list] = {}
 
 
 async def _get_market_info(market: str, session: aiohttp.ClientSession) -> dict:
@@ -62,9 +68,13 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
     seen_tx: set[str] = get_wallet_trade_ids(wallet)
     is_first_poll = True  # first fetch bootstraps seen_tx silently for any remaining history
 
-    wallet_status = get_wallet_status(wallet)
+    wallet_status  = get_wallet_status(wallet)
     is_watch_only  = wallet_status == "watch_only"
     is_follow_only = wallet_status == "follow_only"
+
+    # If watch_only with no prior trades → track new BUYs until 3rd
+    if is_watch_only and not seen_tx:
+        _pending_alert[wallet] = []
 
     while True:
         try:
@@ -101,6 +111,27 @@ async def poll_wallet(wallet: str, session: aiohttp.ClientSession):
                 # First poll: bootstrap only — don't trigger paper trades
                 if is_first_poll:
                     continue
+
+                # Pending alert: 0-history watch_only wallet — count BUYs, alert at 3rd
+                if side == "BUY" and wallet in _pending_alert:
+                    _pending_alert[wallet].append({"outcome": outcome, "price": price, "size": size})
+                    count = len(_pending_alert[wallet])
+                    from config.settings import INSIDER_PENDING_TRADES
+                    if count >= INSIDER_PENDING_TRADES:
+                        scoring = get_wallet_scoring_data(wallet)
+                        amount  = get_deposit_amount(wallet)
+                        age     = scoring.get("wallet_age_days") or 0.0
+                        # Retrieve alert_level from DB
+                        from src.chain.database import get_connection
+                        with get_connection() as _conn:
+                            _row = _conn.execute(
+                                "SELECT alert_level FROM deposits WHERE lower(wallet_address) = ? ORDER BY detected_at DESC LIMIT 1",
+                                (wallet.lower(),)
+                            ).fetchone()
+                        level = _row["alert_level"] if _row else "MEDIUM"
+                        print(f"[clob] 🔔 pending alert triggered for {wallet[:10]}… ({count} trades)")
+                        await send_watchonly_3rd_trade_alert(wallet, amount, age, level, _pending_alert[wallet])
+                        del _pending_alert[wallet]
 
                 # Super alert: concentrated wallet betting heavily on a single market
                 if side == "BUY" and market and MIN_INSIDER_PRICE < price < MAX_INSIDER_PRICE:

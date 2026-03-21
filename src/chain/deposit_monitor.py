@@ -17,8 +17,8 @@ from config.settings import (
 )
 import aiohttp
 
-from src.alerts.telegram import send_alert, send_cluster_alert
-from src.analysis.clob_history import should_reject_wallet
+from src.alerts.telegram import send_cluster_alert, send_watchonly_alert
+from src.analysis.clob_history import evaluate_wallet_entry
 from src.analysis.funders import get_funders
 from src.analysis.graph import add_funder_edges, is_cluster_alert
 from src.chain.database import init_db, save_deposit
@@ -75,41 +75,42 @@ async def handle_deposit(
 
             print(f"[deposit] {sender} | age: {wallet_age_days:.1f}d | amount: {amount_usdc:.2f} USDC")
 
-            flagged = False
+            # Determine alert level — purely informational, all go to watch_only
             if amount_usdc >= ALERT_DEPOSIT_HIGH and wallet_age_days <= WALLET_AGE_HIGH:
-                rejected, wr_data = await should_reject_wallet(sender, session)
-                if rejected:
-                    return
-                save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "HIGH",
-                             clob_win_rate=wr_data["win_rate"] if wr_data["closed"] > 0 else None,
-                             clob_closed_trades=wr_data["closed"] if wr_data["closed"] > 0 else None)
-                watched_wallets.add(sender)
-                await send_alert("🔴 HIGH", sender, amount_usdc, wallet_age_days, tx_hash)
-                flagged = True
+                alert_level = "HIGH"
             elif amount_usdc >= ALERT_DEPOSIT_MEDIUM and wallet_age_days <= WALLET_AGE_MEDIUM:
-                rejected, wr_data = await should_reject_wallet(sender, session)
-                if rejected:
-                    return
-                save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "MEDIUM",
-                             clob_win_rate=wr_data["win_rate"] if wr_data["closed"] > 0 else None,
-                             clob_closed_trades=wr_data["closed"] if wr_data["closed"] > 0 else None)
-                watched_wallets.add(sender)
-                await send_alert("🟡 MEDIUM", sender, amount_usdc, wallet_age_days, tx_hash)
-                flagged = True
+                alert_level = "MEDIUM"
             elif amount_usdc >= ALERT_DEPOSIT_SUPER and wallet_age_days <= WALLET_AGE_MEDIUM:
-                save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, "SUPER",
-                             status="watch_only")
-                watched_wallets.add(sender)
-                print(f"[deposit] 👁 SUPER {sender} | {amount_usdc:.0f} USDC | age {wallet_age_days:.1f}d — watch only")
+                alert_level = "SUPER"
+            else:
+                return  # deposit too small or wallet too old
 
-            if flagged:
-                funders = await get_funders(sender, session)
-                add_funder_edges(sender, funders)
-                if is_cluster_alert(sender):
-                    from src.analysis.graph import get_cluster
-                    cluster = get_cluster(sender)
-                    print(f"[cluster] {sender} belongs to a cluster of {len(cluster)+1}")
-                    await send_cluster_alert(sender, cluster)
+            # Apply insider entry filters (markets concentration + sports %)
+            rejected, reason, stats = await evaluate_wallet_entry(sender, session)
+            if rejected:
+                print(f"[deposit] ✗ {alert_level} {sender[:10]}… filtered out — {reason}")
+                return
+
+            # All clear — add to watchlist as watch_only (never auto-active)
+            save_deposit(tx_hash, sender, amount_usdc, wallet_age_days, alert_level,
+                         clob_closed_trades=stats["trades_count"], status="watch_only")
+            watched_wallets.add(sender)
+
+            if stats["has_history"]:
+                # Has existing trades — alert immediately with summary
+                await send_watchonly_alert(sender, amount_usdc, wallet_age_days, alert_level, stats)
+            else:
+                # No history — tracker will alert at 3rd trade
+                print(f"[deposit] 👁 {alert_level} {sender[:10]}… — no history, watching for trade #{3}")
+
+            # Cluster analysis (informational)
+            funders = await get_funders(sender, session)
+            add_funder_edges(sender, funders)
+            if is_cluster_alert(sender):
+                from src.analysis.graph import get_cluster
+                cluster = get_cluster(sender)
+                print(f"[cluster] {sender} belongs to a cluster of {len(cluster)+1}")
+                await send_cluster_alert(sender, cluster)
 
         except Exception as e:
             print(f"[error] {sender} — {e}")
