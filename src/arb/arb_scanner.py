@@ -18,6 +18,10 @@ CLOB_API = "https://clob.polymarket.com"
 
 _session: aiohttp.ClientSession | None = None
 
+# Deduplication: avoid scanning the same conditionId twice
+# (NegRisk markets can fire multiple ConditionResolution events rapidly)
+_scanned: set[str] = set()
+
 
 def _get_session() -> aiohttp.ClientSession:
     global _session
@@ -28,7 +32,7 @@ def _get_session() -> aiohttp.ClientSession:
 
 def _get_arb_size(stale_price: float) -> float:
     """
-    Return USDC size to deploy based on how stale the price is.
+    Return max USDC to deploy at a given stale price level.
     Lower price = larger profit multiple = bigger bet.
     """
     if stale_price < 0.08:
@@ -42,18 +46,30 @@ def _get_arb_size(stale_price: float) -> float:
 async def scan_resolved_market(condition_id: str, winner: str) -> None:
     """
     Given a resolved conditionId and its winning outcome:
-      1. Fetch market info from CLOB to get the winning token_id
-      2. Query orderbook for stale sell orders (asks) below ARB_MAX_STALE_PRICE
-      3. If found, trigger the arb executor
+      1. Deduplicate (skip if already scanned)
+      2. Fetch market info — verify it is officially closed
+      3. Find the winning token_id
+      4. Query orderbook for ALL stale asks below ARB_MAX_STALE_PRICE
+      5. Sweep them all (cheapest first) up to our capital budget
     """
+    if condition_id in _scanned:
+        return
+    _scanned.add(condition_id)
+
     session = _get_session()
 
-    # Step 1 — fetch market info
+    # Step 1 — fetch market info and verify it is closed
     try:
         async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
+            if resp.status == 404:
+                return  # not a Polymarket market (other protocols use same CTF)
             market = await resp.json()
     except Exception as e:
         print(f"[arb] market fetch failed ({condition_id[:14]}…): {e}")
+        return
+
+    if not market.get("closed", False):
+        # Market not yet officially closed on CLOB side — skip
         return
 
     question = market.get("question", condition_id[:20])
@@ -66,8 +82,7 @@ async def scan_resolved_market(condition_id: str, winner: str) -> None:
             break
 
     if not token_id:
-        print(f"[arb] No {winner} token found for: {question[:50]}")
-        return
+        return  # token not found — NegRisk format mismatch, skip silently
 
     # Step 3 — query orderbook for stale asks
     try:
@@ -80,34 +95,65 @@ async def scan_resolved_market(condition_id: str, winner: str) -> None:
         print(f"[arb] orderbook fetch failed: {e}")
         return
 
+    # asks = people selling the token (we buy from them)
+    # Each ask: {"price": "0.02", "size": "500"} — size is in shares
     asks = book.get("asks", [])
-    stale = [a for a in asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE]
+    stale = sorted(
+        [a for a in asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE],
+        key=lambda a: float(a["price"]),  # cheapest first = highest profit
+    )
 
     if not stale:
-        return  # no stale orders — nothing to arb
+        return  # nothing to arb
 
-    # Take the cheapest ask first (highest profit multiple)
-    best = min(stale, key=lambda a: float(a["price"]))
-    price = float(best["price"])
-    size  = _get_arb_size(price)
-    profit_multiple = round(1.0 / price, 1)
+    # Step 4 — sweep all stale asks, cheapest first, up to capital budget
+    remaining_budget = ARB_CAPITAL
+    opportunities: list[dict] = []
+
+    for ask in stale:
+        price = float(ask["price"])
+        shares_available = float(ask["size"])
+        cost_usdc = shares_available * price          # USDC to buy all shares at this level
+        budget_for_level = min(_get_arb_size(price), remaining_budget)
+
+        if budget_for_level <= 0:
+            break
+
+        # How many shares can we afford at this level?
+        size_usdc = min(cost_usdc, budget_for_level)
+        shares_to_buy = size_usdc / price
+
+        opportunities.append({
+            "price": price,
+            "shares": shares_to_buy,
+            "size_usdc": size_usdc,
+            "profit_x": round(1.0 / price, 1),
+        })
+        remaining_budget -= size_usdc
+
+    if not opportunities:
+        return
+
+    total_cost   = sum(o["size_usdc"] for o in opportunities)
+    total_profit = sum(o["shares"] * (1.0 - o["price"]) for o in opportunities)
+    best_price   = opportunities[0]["price"]
 
     print(
-        f"[arb] 🎯 STALE ORDER — {question[:50]}\n"
-        f"[arb]    {winner} token | price={price:.3f} | size={size:.0f} USDC"
-        f" | x{profit_multiple} profit"
+        f"[arb] 🎯 {question[:50]}\n"
+        f"[arb]    {winner} | {len(opportunities)} price level(s)"
+        f" | best={best_price:.3f} | cost={total_cost:.0f} USDC"
+        f" | profit≈{total_profit:.0f} USDC"
     )
 
     try:
         from src.trading.arb_executor import execute_arb
         await execute_arb(
             token_id=token_id,
-            stale_price=price,
-            size_usdc=size,
+            opportunities=opportunities,
             condition_id=condition_id,
             question=question,
             winner=winner,
             session=session,
         )
     except ImportError:
-        print("[arb] arb_executor not available (deploy src/trading/arb_executor.py on VPS)")
+        print("[arb] arb_executor not available — deploy src/trading/arb_executor.py on VPS")
