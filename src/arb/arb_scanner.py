@@ -12,7 +12,7 @@ Sizing strategy (calibrated on observed bot behavior):
 
 import aiohttp
 
-from config.settings import ARB_CAPITAL, ARB_MAX_STALE_PRICE
+from config.settings import ARB_CAPITAL, ARB_MAX_SINGLE_TRADE, ARB_MAX_STALE_PRICE
 
 CLOB_API = "https://clob.polymarket.com"
 
@@ -106,8 +106,8 @@ async def scan_resolved_market(condition_id: str, winner: str) -> None:
     if not stale:
         return  # nothing to arb
 
-    # Step 4 — sweep all stale asks, cheapest first, up to capital budget
-    remaining_budget = ARB_CAPITAL
+    # Step 4 — sweep all stale asks, cheapest first, up to capital budget (hard cap: ARB_MAX_SINGLE_TRADE)
+    remaining_budget = min(ARB_CAPITAL, ARB_MAX_SINGLE_TRADE)
     opportunities: list[dict] = []
 
     for ask in stale:

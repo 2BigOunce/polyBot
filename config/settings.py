@@ -78,5 +78,6 @@ INSIDER_MAX_SPORTS_PCT = float(os.getenv("INSIDER_MAX_SPORTS_PCT", "0.30"))  # r
 INSIDER_PENDING_TRADES = int(os.getenv("INSIDER_PENDING_TRADES", "3"))  # alert when a 0-history wallet reaches N trades
 
 # --- Resolution arbitrage (Phase 6) ---
-ARB_MAX_STALE_PRICE = float(os.getenv("ARB_MAX_STALE_PRICE", "0.90"))   # buy stale asks below this price
-ARB_CAPITAL         = float(os.getenv("ARB_CAPITAL", "2000"))            # USDC reserved for arb bot
+ARB_MAX_STALE_PRICE  = float(os.getenv("ARB_MAX_STALE_PRICE", "0.90"))   # buy stale asks below this price
+ARB_CAPITAL          = float(os.getenv("ARB_CAPITAL", "2000"))            # USDC reserved for arb bot
+ARB_MAX_SINGLE_TRADE = float(os.getenv("ARB_MAX_SINGLE_TRADE", "50"))    # hard cap per arb execution (safety)
