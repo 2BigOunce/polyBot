@@ -76,3 +76,7 @@ REAL_SPORTS_MIN_TRADES      = int(os.getenv("REAL_SPORTS_MIN_TRADES", "10"))    
 INSIDER_MAX_MARKETS    = int(os.getenv("INSIDER_MAX_MARKETS", "3"))     # reject if wallet traded > N distinct markets (90d)
 INSIDER_MAX_SPORTS_PCT = float(os.getenv("INSIDER_MAX_SPORTS_PCT", "0.30"))  # reject if > 30% of trades are sports
 INSIDER_PENDING_TRADES = int(os.getenv("INSIDER_PENDING_TRADES", "3"))  # alert when a 0-history wallet reaches N trades
+
+# --- Resolution arbitrage (Phase 6) ---
+ARB_MAX_STALE_PRICE = float(os.getenv("ARB_MAX_STALE_PRICE", "0.90"))   # buy stale asks below this price
+ARB_CAPITAL         = float(os.getenv("ARB_CAPITAL", "2000"))            # USDC reserved for arb bot
