@@ -179,7 +179,7 @@ async def evaluate_wallet_entry(
     sports_markets: set[str] = set()
     for market in buy_markets:
         tags = await _get_market_tags(market, session)
-        if "Sports" in tags:
+        if any(t in tags for t in ("Sports", "Esports", "Gaming")):
             sports_markets.add(market)
 
     sports_count = sum(

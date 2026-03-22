@@ -49,7 +49,8 @@ async def _get_market_info(market: str, session: aiohttp.ClientSession) -> dict:
             data = await resp.json()
         raw = data.get("end_date_iso") or data.get("end_date")
         end_date = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else None
-        is_sports = "Sports" in (data.get("tags") or [])
+        _tags = data.get("tags") or []
+        is_sports = any(t in _tags for t in ("Sports", "Esports", "Gaming"))
         question = data.get("question") or market[:20]
     except Exception:
         end_date = None
