@@ -12,7 +12,7 @@ Sizing strategy (calibrated on observed bot behavior):
 
 import aiohttp
 
-from config.settings import ARB_CAPITAL, ARB_MAX_SINGLE_TRADE, ARB_MAX_STALE_PRICE
+from config.settings import ARB_CAPITAL, ARB_MAX_SINGLE_TRADE, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 CLOB_API = "https://clob.polymarket.com"
 
@@ -144,6 +144,22 @@ async def scan_resolved_market(condition_id: str, winner: str) -> None:
         f" | best={best_price:.3f} | cost={total_cost:.0f} USDC"
         f" | profit≈{total_profit:.0f} USDC"
     )
+
+    if not REAL_TRADING_ENABLED:
+        # Dry run — send Telegram alert without placing any order
+        from telegram import Bot
+        multiple = round(1.0 / best_price, 1)
+        msg = (
+            f"👁 ARB OPPORTUNITY (dry run)\n"
+            f"Market: {question[:60]}\n"
+            f"Winner: {winner}\n"
+            f"Best price: {best_price:.3f} (x{multiple})\n"
+            f"Cost: {total_cost:.0f} USDC → Profit ≈ {total_profit:.0f} USDC\n"
+            f"({len(opportunities)} price level(s))"
+        )
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        return
 
     try:
         from src.trading.arb_executor import execute_arb
