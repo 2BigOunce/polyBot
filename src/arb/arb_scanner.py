@@ -10,6 +10,8 @@ Sizing strategy (calibrated on observed bot behavior):
     price >= 0.30 → 5%  of capital (smaller margin, smaller bet)
 """
 
+import asyncio
+
 import aiohttp
 
 from config.settings import ARB_CAPITAL, ARB_MAX_SINGLE_TRADE, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -58,18 +60,27 @@ async def scan_resolved_market(condition_id: str, winner: str) -> None:
 
     session = _get_session()
 
-    # Step 1 — fetch market info and verify it is closed
-    try:
-        async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
-            if resp.status == 404:
-                return  # not a Polymarket market (other protocols use same CTF)
-            market = await resp.json()
-    except Exception as e:
-        print(f"[arb] market fetch failed ({condition_id[:14]}…): {e}")
-        return
+    # Step 1 — fetch market info, retry until CLOB marks it as closed
+    # (on-chain resolution precedes CLOB backend processing by a few seconds)
+    market = None
+    for attempt in range(10):
+        try:
+            async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
+                if resp.status == 404:
+                    return  # not a Polymarket market (other protocols use same CTF)
+                market = await resp.json()
+        except Exception as e:
+            print(f"[arb] market fetch failed ({condition_id[:14]}… attempt {attempt+1}): {e}")
+            await asyncio.sleep(2)
+            continue
 
-    if not market.get("closed", False):
-        # Market not yet officially closed on CLOB side — skip
+        if market.get("closed", False):
+            break  # CLOB has processed the resolution — proceed
+
+        print(f"[arb] market not closed yet ({condition_id[:14]}… attempt {attempt+1}/10) — retrying in 2s")
+        await asyncio.sleep(2)
+    else:
+        print(f"[arb] market never closed on CLOB — skipping {condition_id[:14]}…")
         return
 
     question = market.get("question", condition_id[:20])
