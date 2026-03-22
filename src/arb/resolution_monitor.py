@@ -17,9 +17,9 @@ from config.settings import GNOSIS_CTF, RPC_URL
 from src.arb.arb_scanner import scan_resolved_market
 
 # keccak256("ConditionResolution(address,bytes32,bytes32,uint256,uint256[])")
-CONDITION_RESOLUTION_TOPIC = Web3.keccak(
+CONDITION_RESOLUTION_TOPIC = Web3.to_hex(Web3.keccak(
     text="ConditionResolution(address,bytes32,bytes32,uint256,uint256[])"
-).hex()
+))
 
 
 def _decode_resolution(log: dict) -> tuple[str, list[int]] | None:
