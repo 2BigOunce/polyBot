@@ -104,19 +104,17 @@ async def run_resolution_monitor():
 
                     condition_id, payouts = result
 
-                    # Determine winning side from payout numerators
-                    # Binary market: [1, 0] = YES wins, [0, 1] = NO wins
-                    if not payouts or len(payouts) < 2:
+                    if not payouts:
                         continue
-                    if payouts[0] > 0:
-                        winner = "YES"
-                    elif len(payouts) > 1 and payouts[1] > 0:
-                        winner = "NO"
-                    else:
-                        continue  # invalid payout
 
-                    print(f"[arb] Resolution — {condition_id[:14]}… winner={winner}")
-                    asyncio.create_task(scan_resolved_market(condition_id, winner))
+                    # Works for binary AND multi-outcome markets:
+                    # find the first outcome index with payout > 0
+                    winner_index = next((i for i, p in enumerate(payouts) if p > 0), None)
+                    if winner_index is None:
+                        continue
+
+                    print(f"[arb] Resolution — {condition_id[:14]}… winner_index={winner_index} (of {len(payouts)})")
+                    asyncio.create_task(scan_resolved_market(condition_id, winner_index))
 
         except Exception as e:
             print(f"[arb] Connection lost: {e}. Retrying in {retry_delay}s...")

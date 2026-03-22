@@ -45,12 +45,12 @@ def _get_arb_size(stale_price: float) -> float:
         return min(ARB_CAPITAL * 0.05, 50.0)
 
 
-async def scan_resolved_market(condition_id: str, winner: str) -> None:
+async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     """
-    Given a resolved conditionId and its winning outcome:
+    Given a resolved conditionId and the winning outcome index:
       1. Deduplicate (skip if already scanned)
       2. Fetch market info — verify it is officially closed
-      3. Find the winning token_id
+      3. Find the winning token_id by index (works for binary AND multi-outcome)
       4. Query orderbook for ALL stale asks below ARB_MAX_STALE_PRICE
       5. Sweep them all (cheapest first) up to our capital budget
     """
@@ -85,15 +85,16 @@ async def scan_resolved_market(condition_id: str, winner: str) -> None:
 
     question = market.get("question", condition_id[:20])
 
-    # Step 2 — find the winning token_id
-    token_id = None
-    for token in market.get("tokens", []):
-        if token.get("outcome", "").upper() == winner.upper():
-            token_id = token.get("token_id")
-            break
+    # Step 2 — find the winning token_id by index (works for any number of outcomes)
+    tokens = market.get("tokens", [])
+    if winner_index >= len(tokens):
+        return  # index out of range — skip silently
+    winning_token = tokens[winner_index]
+    token_id = winning_token.get("token_id")
+    winner = winning_token.get("outcome", f"outcome_{winner_index}")
 
     if not token_id:
-        return  # token not found — NegRisk format mismatch, skip silently
+        return
 
     # Step 3 — query orderbook for stale asks
     try:
