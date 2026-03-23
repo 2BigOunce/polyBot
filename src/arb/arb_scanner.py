@@ -18,7 +18,12 @@ from config.settings import ARB_CAPITAL, ARB_MAX_SINGLE_TRADE, ARB_MAX_STALE_PRI
 
 CLOB_API = "https://clob.polymarket.com"
 
-_session: aiohttp.ClientSession | None = None
+# Pre-warmed session with connection pooling and keep-alive to clob.polymarket.com
+_connector = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300, enable_cleanup_closed=True)
+_session: aiohttp.ClientSession = aiohttp.ClientSession(
+    connector=_connector,
+    connector_owner=False,
+)
 
 # Deduplication: avoid scanning the same conditionId twice
 # (NegRisk markets can fire multiple ConditionResolution events rapidly)
@@ -26,9 +31,6 @@ _scanned: set[str] = set()
 
 
 def _get_session() -> aiohttp.ClientSession:
-    global _session
-    if _session is None or _session.closed:
-        _session = aiohttp.ClientSession()
     return _session
 
 
@@ -61,9 +63,9 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     session = _get_session()
 
     # Step 1 — fetch market info, retry until CLOB marks it as closed
-    # (on-chain resolution precedes CLOB backend processing by a few seconds)
+    # Short interval (0.3s) to catch fast CLOB processing; up to 30 attempts = 9s max
     market = None
-    for attempt in range(10):
+    for attempt in range(30):
         try:
             async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
                 if resp.status == 404:
@@ -71,14 +73,13 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
                 market = await resp.json()
         except Exception as e:
             print(f"[arb] market fetch failed ({condition_id[:14]}… attempt {attempt+1}): {e}")
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.3)
             continue
 
         if market.get("closed", False):
             break  # CLOB has processed the resolution — proceed
 
-        print(f"[arb] market not closed yet ({condition_id[:14]}… attempt {attempt+1}/10) — retrying in 2s")
-        await asyncio.sleep(2)
+        await asyncio.sleep(0.3)
     else:
         print(f"[arb] market never closed on CLOB — skipping {condition_id[:14]}…")
         return

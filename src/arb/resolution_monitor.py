@@ -68,12 +68,16 @@ async def run_resolution_monitor():
     Main coroutine: subscribe to CTF ConditionResolution events via WebSocket.
     On each resolution, spawn a scan task to look for stale orders.
     """
-    retry_delay = 30
+    retry_delay = 5
 
     while True:
         try:
-            async with websockets.connect(RPC_URL) as ws:
-                retry_delay = 30
+            async with websockets.connect(
+                RPC_URL,
+                ping_interval=10,
+                ping_timeout=5,
+            ) as ws:
+                retry_delay = 5
 
                 await ws.send(json.dumps({
                     "jsonrpc": "2.0",
@@ -119,4 +123,4 @@ async def run_resolution_monitor():
         except Exception as e:
             print(f"[arb] Connection lost: {e}. Retrying in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)
+            retry_delay = min(retry_delay * 2, 30)
