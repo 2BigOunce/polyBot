@@ -14,7 +14,7 @@ import asyncio
 
 import aiohttp
 
-from config.settings import ARB_CAPITAL, ARB_MAX_SINGLE_TRADE, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config.settings import ARB_CAPITAL, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 CLOB_API = "https://clob.polymarket.com"
 
@@ -40,11 +40,11 @@ def _get_arb_size(stale_price: float) -> float:
     Lower price = larger profit multiple = bigger bet.
     """
     if stale_price < 0.08:
-        return min(ARB_CAPITAL * 0.50, 500.0)
+        return ARB_CAPITAL * 0.30
     elif stale_price < 0.30:
-        return min(ARB_CAPITAL * 0.20, 200.0)
+        return ARB_CAPITAL * 0.15
     else:
-        return min(ARB_CAPITAL * 0.05, 50.0)
+        return ARB_CAPITAL * 0.10
 
 
 async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
@@ -87,6 +87,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     question = market.get("question", condition_id[:20])
 
     # Step 2 — find the winning token_id by index (works for any number of outcomes)
+    # Cross-check: on-chain winner_index must match CLOB token.winner flag
     tokens = market.get("tokens", [])
     if winner_index >= len(tokens):
         return  # index out of range — skip silently
@@ -95,6 +96,11 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     winner = winning_token.get("outcome", f"outcome_{winner_index}")
 
     if not token_id:
+        return
+
+    # Safety check: verify CLOB also marks this token as winner
+    if not winning_token.get("winner", False):
+        print(f"[arb] ⚠️  on-chain index {winner_index} != CLOB winner flag — skipping {condition_id[:14]}…")
         return
 
     # Step 3 — query orderbook for stale asks
@@ -120,7 +126,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
         return  # nothing to arb
 
     # Step 4 — sweep all stale asks, cheapest first, up to capital budget (hard cap: ARB_MAX_SINGLE_TRADE)
-    remaining_budget = min(ARB_CAPITAL, ARB_MAX_SINGLE_TRADE)
+    remaining_budget = ARB_CAPITAL
     opportunities: list[dict] = []
 
     for ask in stale:
