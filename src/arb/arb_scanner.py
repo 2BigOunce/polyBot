@@ -69,6 +69,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
         try:
             async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
                 if resp.status == 404:
+                    print(f"[arb] 404 — not a Polymarket market: {condition_id[:14]}…")
                     return  # not a Polymarket market (other protocols use same CTF)
                 market = await resp.json()
         except Exception as e:

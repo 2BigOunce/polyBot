@@ -13,7 +13,7 @@ import json
 import websockets
 from web3 import Web3
 
-from config.settings import GNOSIS_CTF, RPC_URL
+from config.settings import GNOSIS_CTF, NEG_RISK_ADAPTER, RPC_URL
 from src.arb.arb_scanner import scan_resolved_market
 
 # keccak256("ConditionResolution(address,bytes32,bytes32,uint256,uint256[])")
@@ -84,7 +84,7 @@ async def run_resolution_monitor():
                     "id": 10,
                     "method": "eth_subscribe",
                     "params": ["logs", {
-                        "address": GNOSIS_CTF,
+                        "address": [GNOSIS_CTF, NEG_RISK_ADAPTER],
                         "topics":  [CONDITION_RESOLUTION_TOPIC],
                     }],
                 }))
