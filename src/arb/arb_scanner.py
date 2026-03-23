@@ -18,19 +18,18 @@ from config.settings import ARB_CAPITAL, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABL
 
 CLOB_API = "https://clob.polymarket.com"
 
-# Pre-warmed session with connection pooling and keep-alive to clob.polymarket.com
-_connector = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300, enable_cleanup_closed=True)
-_session: aiohttp.ClientSession = aiohttp.ClientSession(
-    connector=_connector,
-    connector_owner=False,
-)
-
 # Deduplication: avoid scanning the same conditionId twice
 # (NegRisk markets can fire multiple ConditionResolution events rapidly)
 _scanned: set[str] = set()
 
+_session: aiohttp.ClientSession | None = None
+
 
 def _get_session() -> aiohttp.ClientSession:
+    global _session
+    if _session is None or _session.closed:
+        connector = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300)
+        _session = aiohttp.ClientSession(connector=connector)
     return _session
 
 
