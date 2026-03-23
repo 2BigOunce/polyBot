@@ -1,6 +1,7 @@
 import asyncio
 
 from src.alerts.telegram import run_bot
+from src.arb.clob_ws import run_clob_ws
 from src.arb.resolution_monitor import run_resolution_monitor
 from src.chain.deposit_monitor import monitor_deposits
 from src.chain.reaper import reaper
@@ -15,6 +16,7 @@ async def main():
         run_tracker(),
         run_onchain_watcher(),
         run_resolution_monitor(),
+        run_clob_ws(),
         reaper(),
         position_closer(),
         run_bot(),

@@ -61,10 +61,21 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
 
     session = _get_session()
 
-    # Step 1 — fetch market info, retry until CLOB marks it as closed
-    # Short interval (0.3s) to catch fast CLOB processing; up to 30 attempts = 9s max
+    # Step 1 — wait for CLOB to mark the market as closed
+    # Fast path: WS push (registered before any network call to avoid race)
+    # Fallback: HTTP polling if WS times out after 10s
+    from src.arb.clob_ws import get_closed_event
+    closed_event = get_closed_event(condition_id)
+
+    try:
+        await asyncio.wait_for(closed_event.wait(), timeout=10.0)
+        print(f"[arb] WS push received — {condition_id[:14]}…")
+    except asyncio.TimeoutError:
+        print(f"[arb] WS timeout — HTTP fallback for {condition_id[:14]}…")
+
+    # Fetch market data (needed for token_id regardless of how we detected closure)
     market = None
-    for attempt in range(30):
+    for attempt in range(10):
         try:
             async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
                 if resp.status == 404:
