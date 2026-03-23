@@ -75,7 +75,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
 
     # Fetch market data (needed for token_id regardless of how we detected closure)
     market = None
-    for attempt in range(10):
+    for attempt in range(90):
         try:
             async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
                 if resp.status == 404:
@@ -84,13 +84,13 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
                 market = await resp.json()
         except Exception as e:
             print(f"[arb] market fetch failed ({condition_id[:14]}… attempt {attempt+1}): {e}")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.1)
             continue
 
         if market.get("closed", False):
             break  # CLOB has processed the resolution — proceed
 
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.1)
     else:
         print(f"[arb] market never closed on CLOB — skipping {condition_id[:14]}…")
         return

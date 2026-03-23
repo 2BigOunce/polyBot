@@ -13,7 +13,7 @@ import json
 
 import websockets
 
-CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/"
+CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 # condition_id → asyncio.Event (set when CLOB confirms market is closed)
 _closed_events: dict[str, asyncio.Event] = {}
