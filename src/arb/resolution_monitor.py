@@ -111,11 +111,14 @@ async def run_resolution_monitor():
                     if not payouts:
                         continue
 
-                    # Works for binary AND multi-outcome markets:
-                    # find the first outcome index with payout > 0
-                    winner_index = next((i for i, p in enumerate(payouts) if p > 0), None)
-                    if winner_index is None:
+                    # Safety: reject ambiguous resolutions (multiple winners)
+                    # A valid resolution has exactly one non-zero payout
+                    winners = [i for i, p in enumerate(payouts) if p > 0]
+                    if len(winners) != 1:
+                        print(f"[arb] ⚠️  ambiguous payouts {payouts} — skipping {condition_id[:14]}…")
                         continue
+
+                    winner_index = winners[0]
 
                     print(f"[arb] Resolution — {condition_id[:14]}… winner_index={winner_index} (of {len(payouts)})")
                     asyncio.create_task(scan_resolved_market(condition_id, winner_index))

@@ -199,7 +199,12 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     if book:
         stale = _find_stale(book)
         if stale:
-            label = "CLOSED" if market.get("closed", False) else "PRE-CLOSE ⚡"
+            already_closed = market.get("closed", False)
+            # If CLOB already closed, cross-check winner flag before buying
+            if already_closed and not winning_token.get("winner", False):
+                print(f"[arb] ⚠️  fast path winner flag mismatch — skipping {condition_id[:14]}…")
+                return
+            label = "CLOSED" if already_closed else "PRE-CLOSE ⚡"
             print(f"[arb] {label} — {len(stale)} stale ask(s) | {condition_id[:14]}…")
             await _sweep(stale, token_id, question, winner, condition_id, session)
             return
