@@ -14,6 +14,8 @@ import json
 
 import websockets
 
+from config.settings import ARB_MAX_STALE_PRICE
+
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 # condition_id → asyncio.Event (set when CLOB confirms market is closed)
@@ -21,6 +23,9 @@ _closed_events: dict[str, asyncio.Event] = {}
 
 # token_id → {"asks": [...], "bids": [...]}  — live orderbook snapshots
 _books: dict[str, dict] = {}
+
+# token_id → pre-computed stale asks (filtered + sorted, ready to use at resolution)
+_stale: dict[str, list[dict]] = {}
 
 # Queue of token_ids waiting to be subscribed on the WS
 _subscription_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -55,6 +60,14 @@ def get_cached_book(token_id: str) -> dict | None:
     return _books.get(token_id)
 
 
+def get_cached_stale(token_id: str) -> list[dict] | None:
+    """
+    Return pre-computed stale asks (filtered + sorted) for this token, or None.
+    Updated on every WS book event — zero computation at resolution time.
+    """
+    return _stale.get(token_id)
+
+
 def _handle_message(msg: dict | list) -> None:
     """Process a WS message. Handles both list (batch) and dict (single) formats."""
     if isinstance(msg, list):
@@ -67,14 +80,16 @@ def _handle_message(msg: dict | list) -> None:
 
     event_type = msg.get("event_type", "")
 
-    # Orderbook snapshot — store in memory
+    # Orderbook snapshot — store in memory + pre-compute stale asks
     if event_type == "book":
         token_id = msg.get("asset_id")
         if token_id:
-            _books[token_id] = {
-                "asks": msg.get("asks", []),
-                "bids": msg.get("bids", []),
-            }
+            asks = msg.get("asks", [])
+            _books[token_id] = {"asks": asks, "bids": msg.get("bids", [])}
+            _stale[token_id] = sorted(
+                [a for a in asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE],
+                key=lambda a: float(a["price"]),
+            )
         return
 
     # Market closure — signal waiting scanners

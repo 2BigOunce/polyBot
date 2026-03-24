@@ -149,7 +149,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     _scanned.add(condition_id)
 
     session = _get_session()
-    from src.arb.clob_ws import get_closed_event, get_cached_book, subscribe_orderbook
+    from src.arb.clob_ws import get_closed_event, get_cached_book, get_cached_stale, subscribe_orderbook
     closed_event = get_closed_event(condition_id)
 
     # ── Step 1: immediate market fetch ────────────────────────────────────────
@@ -196,10 +196,13 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
         except Exception as e:
             print(f"[arb] fast path book fetch failed: {e}")
 
-    if book:
+    # Use pre-computed stale asks if available (built during CLOB delay), else compute now
+    stale = get_cached_stale(token_id)
+    if stale is None and book:
         stale = _find_stale(book)
-        if stale:
-            already_closed = market.get("closed", False)
+
+    if stale:
+        already_closed = market.get("closed", False)
             # If CLOB already closed, cross-check winner flag before buying
             if already_closed and not winning_token.get("winner", False):
                 print(f"[arb] ⚠️  fast path winner flag mismatch — skipping {condition_id[:14]}…")
@@ -263,7 +266,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
             print(f"[arb] orderbook fetch failed: {e}")
             return
 
-    stale = _find_stale(book)
+    stale = get_cached_stale(token_id) or _find_stale(book)
     if not stale:
         return
 
