@@ -152,26 +152,39 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     from src.arb.clob_ws import get_closed_event, get_cached_book, get_cached_stale, subscribe_orderbook
     closed_event = get_closed_event(condition_id)
 
-    # ── Step 1: immediate market fetch ────────────────────────────────────────
+    # ── Step 1: resolve token_id from cache or HTTP ───────────────────────────
+    from src.arb.market_cache import get_cached_market
+    cached = get_cached_market(condition_id)
+
     market = None
-    try:
-        async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
-            if resp.status == 404:
-                print(f"[arb] 404 — not a Polymarket market: {condition_id[:14]}…")
-                return
-            market = await resp.json()
-    except Exception as e:
-        print(f"[arb] market fetch failed ({condition_id[:14]}…): {e}")
-        return
+    if cached:
+        tokens = cached.get("tokens", [])
+        if winner_index >= len(tokens):
+            return
+        winning_token = tokens[winner_index]
+        token_id      = winning_token.get("token_id")
+        winner        = winning_token.get("outcome", f"outcome_{winner_index}")
+        question      = cached.get("question", condition_id[:20])
+        print(f"[arb] ⚡ cache hit — skipped market HTTP fetch ({condition_id[:14]}…)")
+    else:
+        try:
+            async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
+                if resp.status == 404:
+                    print(f"[arb] 404 — not a Polymarket market: {condition_id[:14]}…")
+                    return
+                market = await resp.json()
+        except Exception as e:
+            print(f"[arb] market fetch failed ({condition_id[:14]}…): {e}")
+            return
 
-    tokens = market.get("tokens", [])
-    if winner_index >= len(tokens):
-        return
+        tokens = market.get("tokens", [])
+        if winner_index >= len(tokens):
+            return
 
-    winning_token = tokens[winner_index]
-    token_id      = winning_token.get("token_id")
-    winner        = winning_token.get("outcome", f"outcome_{winner_index}")
-    question      = market.get("question", condition_id[:20])
+        winning_token = tokens[winner_index]
+        token_id      = winning_token.get("token_id")
+        winner        = winning_token.get("outcome", f"outcome_{winner_index}")
+        question      = market.get("question", condition_id[:20])
 
     if not token_id:
         return
@@ -179,7 +192,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     # Subscribe to orderbook WS immediately — book builds in RAM during CLOB delay
     await subscribe_orderbook(token_id)
 
-    if market.get("closed", False):
+    if market and market.get("closed", False):
         closed_event.set()
 
     # ── Step 2: fast path — buy before CLOB marks market closed ───────────────
@@ -202,15 +215,15 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
         stale = _find_stale(book)
 
     if stale:
-        already_closed = market.get("closed", False)
-            # If CLOB already closed, cross-check winner flag before buying
-            if already_closed and not winning_token.get("winner", False):
-                print(f"[arb] ⚠️  fast path winner flag mismatch — skipping {condition_id[:14]}…")
-                return
-            label = "CLOSED" if already_closed else "PRE-CLOSE ⚡"
-            print(f"[arb] {label} — {len(stale)} stale ask(s) | {condition_id[:14]}…")
-            await _sweep(stale, token_id, question, winner, condition_id, session)
+        already_closed = bool(market and market.get("closed", False))
+        # If CLOB already closed, cross-check winner flag before buying
+        if already_closed and not winning_token.get("winner", False):
+            print(f"[arb] ⚠️  fast path winner flag mismatch — skipping {condition_id[:14]}…")
             return
+        label = "CLOSED" if already_closed else "PRE-CLOSE ⚡"
+        print(f"[arb] {label} — {len(stale)} stale ask(s) | {condition_id[:14]}…")
+        await _sweep(stale, token_id, question, winner, condition_id, session)
+        return
 
     # ── Step 3: slow path — wait for closed=true + retry ─────────────────────
     # Fast path found no stale orders (likely already cancelled by MMs).
@@ -223,7 +236,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
             print(f"[arb] WS timeout — HTTP fallback for {condition_id[:14]}…")
 
     # Confirm closed via HTTP polling if not yet confirmed
-    if not market.get("closed", False):
+    if not (market and market.get("closed", False)):
         for attempt in range(90):
             try:
                 async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
