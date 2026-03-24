@@ -10,7 +10,7 @@ from config.settings import (
     ALERT_DEPOSIT_MEDIUM,
     ALERT_DEPOSIT_SUPER,
     POLYMARKET_CONTRACTS,
-    RPC_URL,
+    RPC_URL_TRACKER,
     USDC_ADDRESS,
     WALLET_AGE_HIGH,
     WALLET_AGE_MEDIUM,
@@ -124,7 +124,7 @@ async def monitor_deposits():
 
     while True:
         try:
-            async with websockets.connect(RPC_URL) as ws:
+            async with websockets.connect(RPC_URL_TRACKER) as ws:
                 retry_delay = 30
                 await ws.send(json.dumps({
                     "jsonrpc": "2.0",

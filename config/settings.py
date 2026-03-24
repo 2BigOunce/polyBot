@@ -4,8 +4,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Connections ---
-RPC_URL      = os.getenv("RPC_WS_URL")   # WebSocket — used for eth_subscribe
-HTTP_RPC_URL = os.getenv("RPC_HTTP_URL") # HTTP — used for eth_getBlock calls
+RPC_URL         = os.getenv("RPC_WS_URL")          # WebSocket — arb bot (low latency, Chainstack)
+RPC_URL_TRACKER = os.getenv("RPC_WS_URL_TRACKER")  # WebSocket — tracker/deposits (PublicNode, high volume OK)
+HTTP_RPC_URL    = os.getenv("RPC_HTTP_URL")         # HTTP — used for eth_getBlock calls
 
 WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
 WALLET_PRIVATE_KEY = os.getenv("WALLET_PRIVATE_KEY")

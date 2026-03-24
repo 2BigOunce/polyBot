@@ -4,7 +4,7 @@ import json
 import websockets
 from web3 import AsyncWeb3
 
-from config.settings import CTF_EXCHANGE, NEG_RISK_EXCHANGE, RPC_URL
+from config.settings import CTF_EXCHANGE, NEG_RISK_EXCHANGE, RPC_URL_TRACKER
 from src.clob import watched_wallets
 
 ORDER_FILLED_TOPIC = "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6"
@@ -31,7 +31,7 @@ async def run_onchain_watcher():
 
     while True:
         try:
-            async with websockets.connect(RPC_URL) as ws:
+            async with websockets.connect(RPC_URL_TRACKER) as ws:
                 retry_delay = 30
                 await ws.send(json.dumps({
                     "jsonrpc": "2.0",
