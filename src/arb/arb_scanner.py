@@ -23,7 +23,7 @@ import asyncio
 import aiohttp
 from telegram import Bot
 
-from config.settings import ARB_CAPITAL, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config.settings import ARB_CAPITAL, ARB_MAX_SINGLE_TRADE, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from src.arb.clob_ws import get_closed_event, get_cached_book, get_cached_stale, subscribe_orderbook
 from src.arb.market_cache import get_cached_market
 
@@ -59,11 +59,11 @@ def _get_arb_size(stale_price: float) -> float:
     Lower price = larger profit multiple = bigger bet.
     """
     if stale_price < 0.08:
-        return ARB_CAPITAL * 0.30
+        return min(ARB_CAPITAL * 0.30, ARB_MAX_SINGLE_TRADE)
     elif stale_price < 0.30:
-        return ARB_CAPITAL * 0.15
+        return min(ARB_CAPITAL * 0.15, ARB_MAX_SINGLE_TRADE)
     else:
-        return ARB_CAPITAL * 0.10
+        return min(ARB_CAPITAL * 0.10, ARB_MAX_SINGLE_TRADE)
 
 
 def _find_stale(book: dict) -> list[dict]:
