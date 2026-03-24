@@ -1,11 +1,12 @@
 """
-CLOB WebSocket client for real-time market status push.
+CLOB WebSocket client for real-time market status push + in-memory orderbook cache.
 
-Maintains a persistent connection to wss://ws-subscriptions-clob.polymarket.com/ws/
-and fires asyncio Events when markets transition to closed=true.
-
-Used by arb_scanner.py to replace the HTTP polling retry loop with a push model,
-reducing closed-detection latency from 0-300ms to ~20-50ms.
+Two responsibilities:
+  1. Fire asyncio Events when markets transition to closed=true (replaces HTTP polling).
+  2. Maintain live orderbook snapshots in memory via WS subscriptions.
+     When a resolution is detected on-chain, arb_scanner subscribes immediately.
+     The ~1-5s CLOB processing delay is used productively to build the book in RAM.
+     By the time the market is confirmed closed, the book is already there — 0ms fetch.
 """
 
 import asyncio
@@ -18,23 +19,44 @@ CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 # condition_id → asyncio.Event (set when CLOB confirms market is closed)
 _closed_events: dict[str, asyncio.Event] = {}
 
+# token_id → {"asks": [...], "bids": [...]}  — live orderbook snapshots
+_books: dict[str, dict] = {}
+
+# Queue of token_ids waiting to be subscribed on the WS
+_subscription_queue: asyncio.Queue[str] = asyncio.Queue()
+
 
 def get_closed_event(condition_id: str) -> asyncio.Event:
     """
     Register interest in a market closing.
-    Returns an Event that will be set when the WS receives closed=true for this market.
-    Call this BEFORE waiting — so the event is in place when the WS message arrives.
+    Returns an Event that will be set when the WS receives closed=true.
+    Call BEFORE awaiting — so the event is in place when the push arrives.
     """
     if condition_id not in _closed_events:
         _closed_events[condition_id] = asyncio.Event()
     return _closed_events[condition_id]
 
 
+async def subscribe_orderbook(token_id: str) -> None:
+    """
+    Request a live orderbook subscription for a token_id.
+    The subscription is sent to the WS as soon as the sender task picks it up.
+    Call this immediately after detecting an on-chain resolution to use the
+    CLOB processing delay (~1-5s) to pre-fill the in-memory book.
+    """
+    await _subscription_queue.put(token_id)
+
+
+def get_cached_book(token_id: str) -> dict | None:
+    """
+    Return the latest in-memory orderbook snapshot for this token, or None.
+    After calling subscribe_orderbook() and waiting ~1s, this should be populated.
+    """
+    return _books.get(token_id)
+
+
 def _handle_message(msg: dict | list) -> None:
-    """
-    Process a WS message. Handles both list (batch) and dict (single) formats.
-    Looks for any field combination that indicates closed=true for a known market.
-    """
+    """Process a WS message. Handles both list (batch) and dict (single) formats."""
     if isinstance(msg, list):
         for item in msg:
             _handle_message(item)
@@ -43,18 +65,29 @@ def _handle_message(msg: dict | list) -> None:
     if not isinstance(msg, dict):
         return
 
+    event_type = msg.get("event_type", "")
+
+    # Orderbook snapshot — store in memory
+    if event_type == "book":
+        token_id = msg.get("asset_id")
+        if token_id:
+            _books[token_id] = {
+                "asks": msg.get("asks", []),
+                "bids": msg.get("bids", []),
+            }
+        return
+
+    # Market closure — signal waiting scanners
     closed = msg.get("closed", False)
     if not closed:
         return
 
-    # Try common field names for condition_id across Polymarket API versions
     condition_id = (
         msg.get("condition_id")
         or msg.get("conditionId")
         or msg.get("market_id")
         or msg.get("market")
     )
-
     if not condition_id:
         return
 
@@ -64,10 +97,29 @@ def _handle_message(msg: dict | list) -> None:
         event.set()
 
 
+async def _sender(ws) -> None:
+    """Consume the subscription queue and send orderbook subscription messages."""
+    while True:
+        token_id = await _subscription_queue.get()
+        try:
+            await ws.send(json.dumps({
+                "auth": {},
+                "type": "Market",
+                "assets_ids": [token_id],
+                "markets": [],
+            }))
+            print(f"[arb_ws] 📖 subscribed orderbook: {token_id[:14]}…")
+        except Exception as e:
+            print(f"[arb_ws] subscription send failed: {e}")
+            # Re-queue so the next connection attempt picks it up
+            await _subscription_queue.put(token_id)
+            return
+
+
 async def run_clob_ws() -> None:
     """
     Maintain a persistent WS connection to the Polymarket CLOB.
-    Subscribes to all market status events and signals waiting arb scanners.
+    Spawns a sender task for dynamic subscriptions.
     Run via asyncio.gather() in main.py.
     """
     retry_delay = 5
@@ -81,7 +133,7 @@ async def run_clob_ws() -> None:
             ) as ws:
                 retry_delay = 5
 
-                # Subscribe to all market events (empty lists = all markets)
+                # Subscribe to all market status events
                 await ws.send(json.dumps({
                     "auth": {},
                     "type": "Market",
@@ -91,11 +143,16 @@ async def run_clob_ws() -> None:
 
                 print("[arb_ws] Connected — listening for market closures...")
 
-                async for raw in ws:
-                    try:
-                        _handle_message(json.loads(raw))
-                    except Exception as e:
-                        print(f"[arb_ws] parse error: {e}")
+                # Sender task handles dynamic orderbook subscriptions concurrently
+                sender = asyncio.create_task(_sender(ws))
+                try:
+                    async for raw in ws:
+                        try:
+                            _handle_message(json.loads(raw))
+                        except Exception as e:
+                            print(f"[arb_ws] parse error: {e}")
+                finally:
+                    sender.cancel()
 
         except Exception as e:
             print(f"[arb_ws] Connection lost: {e}. Retrying in {retry_delay}s…")

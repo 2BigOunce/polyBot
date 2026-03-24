@@ -61,39 +61,65 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
 
     session = _get_session()
 
-    # Step 1 — wait for CLOB to mark the market as closed
-    # Fast path: WS push (registered before any network call to avoid race)
-    # Fallback: HTTP polling if WS times out after 10s
-    from src.arb.clob_ws import get_closed_event
+    from src.arb.clob_ws import get_closed_event, get_cached_book, subscribe_orderbook
+
+    # Register WS closed event before any network call (avoid race condition)
     closed_event = get_closed_event(condition_id)
 
-    try:
-        await asyncio.wait_for(closed_event.wait(), timeout=10.0)
-        print(f"[arb] WS push received — {condition_id[:14]}…")
-    except asyncio.TimeoutError:
-        print(f"[arb] WS timeout — HTTP fallback for {condition_id[:14]}…")
-
-    # Fetch market data (needed for token_id regardless of how we detected closure)
+    # Step 1 — optimistic market fetch: get token_id immediately, don't wait for closed.
+    # The CLOB processing delay (~1-5s) is used productively:
+    #   we subscribe to the orderbook WS now so the book builds in memory while we wait.
     market = None
-    for attempt in range(90):
-        try:
-            async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
-                if resp.status == 404:
-                    print(f"[arb] 404 — not a Polymarket market: {condition_id[:14]}…")
-                    return  # not a Polymarket market (other protocols use same CTF)
-                market = await resp.json()
-        except Exception as e:
-            print(f"[arb] market fetch failed ({condition_id[:14]}… attempt {attempt+1}): {e}")
-            await asyncio.sleep(0.1)
-            continue
+    try:
+        async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
+            if resp.status == 404:
+                print(f"[arb] 404 — not a Polymarket market: {condition_id[:14]}…")
+                return
+            market = await resp.json()
+    except Exception as e:
+        print(f"[arb] optimistic fetch failed ({condition_id[:14]}…): {e}")
 
+    if market:
+        # Subscribe to orderbook WS immediately — book will be ready when market closes
+        tokens = market.get("tokens", [])
+        if winner_index < len(tokens):
+            early_token_id = tokens[winner_index].get("token_id")
+            if early_token_id:
+                await subscribe_orderbook(early_token_id)
+
+        # If market is already closed (rare), signal immediately and skip the wait
         if market.get("closed", False):
-            break  # CLOB has processed the resolution — proceed
+            closed_event.set()
 
-        await asyncio.sleep(0.1)
-    else:
-        print(f"[arb] market never closed on CLOB — skipping {condition_id[:14]}…")
-        return
+    # Step 2 — wait for CLOB to mark the market as closed (WS push or timeout)
+    if not closed_event.is_set():
+        try:
+            await asyncio.wait_for(closed_event.wait(), timeout=10.0)
+            print(f"[arb] WS push received — {condition_id[:14]}…")
+        except asyncio.TimeoutError:
+            print(f"[arb] WS timeout — HTTP fallback for {condition_id[:14]}…")
+
+    # Step 3 — confirm closed via HTTP if not already confirmed
+    if market is None or not market.get("closed", False):
+        for attempt in range(90):
+            try:
+                async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
+                    if resp.status == 404:
+                        print(f"[arb] 404 — not a Polymarket market: {condition_id[:14]}…")
+                        return
+                    market = await resp.json()
+            except Exception as e:
+                print(f"[arb] market fetch failed ({condition_id[:14]}… attempt {attempt+1}): {e}")
+                await asyncio.sleep(0.1)
+                continue
+
+            if market.get("closed", False):
+                break
+
+            await asyncio.sleep(0.1)
+        else:
+            print(f"[arb] market never closed on CLOB — skipping {condition_id[:14]}…")
+            return
 
     question = market.get("question", condition_id[:20])
 
@@ -114,16 +140,20 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
         print(f"[arb] ⚠️  on-chain index {winner_index} != CLOB winner flag — skipping {condition_id[:14]}…")
         return
 
-    # Step 3 — query orderbook for stale asks
-    try:
-        async with session.get(
-            f"{CLOB_API}/orderbook",
-            params={"token_id": token_id},
-        ) as resp:
-            book = await resp.json()
-    except Exception as e:
-        print(f"[arb] orderbook fetch failed: {e}")
-        return
+    # Step 3 — get orderbook: in-memory cache (0ms) or fallback to REST
+    book = get_cached_book(token_id)
+    if book is not None:
+        print(f"[arb] 📚 using cached orderbook ({condition_id[:14]}…)")
+    else:
+        try:
+            async with session.get(
+                f"{CLOB_API}/orderbook",
+                params={"token_id": token_id},
+            ) as resp:
+                book = await resp.json()
+        except Exception as e:
+            print(f"[arb] orderbook fetch failed: {e}")
+            return
 
     # asks = people selling the token (we buy from them)
     # Each ask: {"price": "0.02", "size": "500"} — size is in shares
