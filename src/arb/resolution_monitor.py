@@ -8,7 +8,8 @@ Works for both standard CTF markets and NegRisk markets (both resolve via CTF).
 """
 
 import asyncio
-import json
+
+import orjson
 
 import websockets
 from web3 import Web3
@@ -79,7 +80,7 @@ async def run_resolution_monitor():
             ) as ws:
                 retry_delay = 5
 
-                await ws.send(json.dumps({
+                await ws.send(orjson.dumps({
                     "jsonrpc": "2.0",
                     "id": 10,
                     "method": "eth_subscribe",
@@ -89,7 +90,7 @@ async def run_resolution_monitor():
                     }],
                 }))
 
-                resp = json.loads(await ws.recv())
+                resp = orjson.loads(await ws.recv())
                 if "result" not in resp:
                     print(f"[arb] Subscribe error: {resp}")
                     raise KeyError("result")
@@ -97,7 +98,7 @@ async def run_resolution_monitor():
                 print("[arb] Connected — listening for ConditionResolution events...")
 
                 async for raw_msg in ws:
-                    msg = json.loads(raw_msg)
+                    msg = orjson.loads(raw_msg)
                     if msg.get("method") != "eth_subscription":
                         continue
 

@@ -21,8 +21,20 @@ Sizing strategy:
 import asyncio
 
 import aiohttp
+from telegram import Bot
 
 from config.settings import ARB_CAPITAL, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from src.arb.clob_ws import get_closed_event, get_cached_book, get_cached_stale, subscribe_orderbook
+from src.arb.market_cache import get_cached_market
+
+_bot: Bot | None = None
+
+
+def _get_bot() -> Bot:
+    global _bot
+    if _bot is None:
+        _bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    return _bot
 
 CLOB_API = "https://clob.polymarket.com"
 
@@ -110,7 +122,6 @@ async def _sweep(
     )
 
     if not REAL_TRADING_ENABLED:
-        from telegram import Bot
         multiple = round(1.0 / best_price, 1)
         msg = (
             f"👁 ARB OPPORTUNITY (dry run)\n"
@@ -120,12 +131,11 @@ async def _sweep(
             f"Cost: {total_cost:.0f} USDC → Profit ≈ {total_profit:.0f} USDC\n"
             f"({len(opportunities)} price level(s))"
         )
-        bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        await _get_bot().send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
         return
 
     try:
-        from src.trading.arb_executor import execute_arb
+        from src.trading.arb_executor import execute_arb  # VPS-only, not committed
         await execute_arb(
             token_id=token_id,
             opportunities=opportunities,
@@ -149,11 +159,9 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     _scanned.add(condition_id)
 
     session = _get_session()
-    from src.arb.clob_ws import get_closed_event, get_cached_book, get_cached_stale, subscribe_orderbook
     closed_event = get_closed_event(condition_id)
 
     # ── Step 1: resolve token_id from cache or HTTP ───────────────────────────
-    from src.arb.market_cache import get_cached_market
     cached = get_cached_market(condition_id)
 
     market = None

@@ -16,3 +16,4 @@ python-telegram-bot>=21.0
 
 # Utilities
 python-dotenv>=1.0.0
+orjson>=3.9.0
