@@ -233,6 +233,8 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
         await _sweep(stale, token_id, question, winner, condition_id, session)
         return
 
+    print(f"[arb] fast path: no stale asks | {condition_id[:14]}…")
+
     # ── Step 3: slow path — wait for closed=true + retry ─────────────────────
     # Fast path found no stale orders (likely already cancelled by MMs).
     # Wait for CLOB to confirm closed, then check once more with a fresh book.
@@ -245,7 +247,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
 
     # Confirm closed via HTTP polling if not yet confirmed
     if not (market and market.get("closed", False)):
-        for attempt in range(30):
+        for attempt in range(180):
             try:
                 async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
                     if resp.status == 404:
@@ -259,15 +261,12 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
                 await asyncio.sleep(1.0)
                 continue
 
-            if attempt == 0:
-                print(f"[arb] slow path diag: closed={market.get('closed')}, accepting={market.get('accepting_orders')}, tokens={len(market.get('tokens', []))}, cid_match={market.get('condition_id', '')[:14]}")
-
             if market.get("closed", False):
                 break
 
             await asyncio.sleep(1.0)
         else:
-            print(f"[arb] market never closed on CLOB — skipping {condition_id[:14]}…")
+            print(f"[arb] market never closed on CLOB after 3min — skipping {condition_id[:14]}…")
             return
 
     # Safety check: verify CLOB winner flag now that market is officially closed
