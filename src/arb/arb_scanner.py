@@ -259,6 +259,9 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
                 await asyncio.sleep(1.0)
                 continue
 
+            if attempt == 0:
+                print(f"[arb] slow path diag: closed={market.get('closed')}, accepting={market.get('accepting_orders')}, tokens={len(market.get('tokens', []))}, cid_match={market.get('condition_id', '')[:14]}")
+
             if market.get("closed", False):
                 break
 
