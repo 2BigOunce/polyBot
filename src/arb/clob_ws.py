@@ -145,6 +145,7 @@ async def run_clob_ws() -> None:
                 CLOB_WS,
                 ping_interval=20,
                 ping_timeout=10,
+                open_timeout=15,
             ) as ws:
                 retry_delay = 5
 

@@ -77,6 +77,7 @@ async def run_resolution_monitor():
                 RPC_URL,
                 ping_interval=10,
                 ping_timeout=5,
+                open_timeout=15,
             ) as ws:
                 retry_delay = 5
 
@@ -90,7 +91,11 @@ async def run_resolution_monitor():
                     }],
                 }))
 
-                resp = orjson.loads(await ws.recv())
+                try:
+                    resp = orjson.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+                except asyncio.TimeoutError:
+                    print("[arb] Subscription handshake timeout — retrying...")
+                    raise ConnectionError("handshake timeout")
                 if "result" not in resp:
                     print(f"[arb] Subscribe error: {resp}")
                     raise KeyError("result")
