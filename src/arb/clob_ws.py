@@ -167,8 +167,10 @@ async def run_clob_ws() -> None:
                             continue
                         try:
                             _handle_message(json.loads(raw))
+                        except (json.JSONDecodeError, ValueError):
+                            pass  # ACK / ping frames from CLOB WS are not JSON
                         except Exception as e:
-                            print(f"[arb_ws] parse error: {e}")
+                            print(f"[arb_ws] error: {e}")
                 finally:
                     sender.cancel()
 
