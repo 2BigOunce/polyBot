@@ -233,6 +233,10 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
         await _sweep(stale, token_id, question, winner, condition_id, session)
         return
 
+    # If book was fetched and completely empty, no slow path needed — no orders to find
+    if book is not None and not book.get("asks"):
+        return
+
     print(f"[arb] fast path: no stale asks | {condition_id[:14]}…")
 
     # ── Step 3: slow path — wait for closed=true + retry ─────────────────────
