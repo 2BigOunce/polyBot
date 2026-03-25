@@ -235,6 +235,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
 
     # If book was fetched and completely empty, no slow path needed — no orders to find
     if book is not None and not book.get("asks"):
+        print(f"[arb] empty book — skipping {condition_id[:14]}…")
         return
 
     print(f"[arb] fast path: no stale asks | {condition_id[:14]}…")
