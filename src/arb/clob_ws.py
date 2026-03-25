@@ -163,6 +163,8 @@ async def run_clob_ws() -> None:
                 sender = asyncio.create_task(_sender(ws))
                 try:
                     async for raw in ws:
+                        if not raw:
+                            continue
                         try:
                             _handle_message(json.loads(raw))
                         except Exception as e:

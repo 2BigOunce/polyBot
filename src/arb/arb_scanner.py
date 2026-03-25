@@ -211,7 +211,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     if book is None:
         try:
             async with session.get(
-                f"{CLOB_API}/orderbook", params={"token_id": token_id}
+                f"{CLOB_API}/book", params={"token_id": token_id}
             ) as resp:
                 book = await resp.json()
         except Exception as e:
@@ -245,21 +245,24 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
 
     # Confirm closed via HTTP polling if not yet confirmed
     if not (market and market.get("closed", False)):
-        for attempt in range(90):
+        for attempt in range(30):
             try:
                 async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
                     if resp.status == 404:
                         return
+                    if resp.status == 429:
+                        await asyncio.sleep(2.0)
+                        continue
                     market = await resp.json()
             except Exception as e:
                 print(f"[arb] slow path fetch failed (attempt {attempt+1}): {e}")
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(1.0)
                 continue
 
             if market.get("closed", False):
                 break
 
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(1.0)
         else:
             print(f"[arb] market never closed on CLOB — skipping {condition_id[:14]}…")
             return
@@ -280,7 +283,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     else:
         try:
             async with session.get(
-                f"{CLOB_API}/orderbook", params={"token_id": token_id}
+                f"{CLOB_API}/book", params={"token_id": token_id}
             ) as resp:
                 book = await resp.json()
         except Exception as e:
