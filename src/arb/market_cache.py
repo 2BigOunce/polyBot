@@ -54,6 +54,11 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
     count = 0
     new_subs = 0
 
+    if markets:
+        sample = markets[0]
+        date_fields = {k: v for k, v in sample.items() if "date" in k.lower() or "time" in k.lower() or "end" in k.lower()}
+        print(f"[market_cache] date fields in API: {date_fields}")
+
     for m in markets:
         cid = m.get("condition_id")
         if not cid:
