@@ -17,9 +17,10 @@ from web3 import Web3
 from config.settings import GNOSIS_CTF, NEG_RISK_ADAPTER, RPC_URL
 from src.arb.arb_scanner import scan_resolved_market
 
-# keccak256("ConditionResolution(address,bytes32,bytes32,uint256,uint256[])")
+# keccak256("ConditionResolution(bytes32,address,bytes32,uint256,uint256[])")
+# Standard Gnosis CTF: conditionId (bytes32) indexed first, then oracle (address), then questionId (bytes32)
 CONDITION_RESOLUTION_TOPIC = Web3.to_hex(Web3.keccak(
-    text="ConditionResolution(address,bytes32,bytes32,uint256,uint256[])"
+    text="ConditionResolution(bytes32,address,bytes32,uint256,uint256[])"
 ))
 
 
@@ -27,11 +28,11 @@ def _decode_resolution(log: dict) -> tuple[str, list[int]] | None:
     """
     Decode a ConditionResolution log into (conditionId, payoutNumerators).
 
-    Log structure:
+    Log structure (standard Gnosis CTF event order):
         topics[0] = event signature
-        topics[1] = oracle address (indexed)
-        topics[2] = questionId (indexed, bytes32)
-        topics[3] = conditionId (indexed, bytes32)
+        topics[1] = conditionId (indexed, bytes32)
+        topics[2] = oracle address (indexed)
+        topics[3] = questionId (indexed, bytes32)
         data      = abi-encoded (uint256 outcomeSlotCount, uint256[] payoutNumerators)
 
     ABI layout of data:
@@ -45,7 +46,7 @@ def _decode_resolution(log: dict) -> tuple[str, list[int]] | None:
         if len(topics) < 4:
             return None
 
-        condition_id = topics[3]  # 0x-prefixed bytes32 hex string
+        condition_id = topics[1]  # 0x-prefixed bytes32 hex string — conditionId is first indexed param
 
         data = bytes.fromhex(log["data"].lstrip("0x"))
         if len(data) < 96:
