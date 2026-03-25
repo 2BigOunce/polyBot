@@ -48,7 +48,7 @@ def _decode_resolution(log: dict) -> tuple[str, list[int]] | None:
 
         condition_id = topics[1]  # 0x-prefixed bytes32 hex string — conditionId is first indexed param
 
-        data = bytes.fromhex(log["data"].lstrip("0x"))
+        data = bytes.fromhex(log["data"][2:])
         if len(data) < 96:
             return None
 
