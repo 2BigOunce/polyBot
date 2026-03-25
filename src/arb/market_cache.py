@@ -12,7 +12,6 @@ so the book is already in RAM when the resolution fires.
 """
 
 import asyncio
-from datetime import datetime, timezone
 
 import aiohttp
 
@@ -20,7 +19,6 @@ from src.arb.clob_ws import subscribe_orderbook
 
 CLOB_API         = "https://clob.polymarket.com"
 REFRESH_INTERVAL = 1800  # 30 minutes
-PRESUB_HOURS     = 6     # subscribe to books of markets ending within this window
 
 # condition_id → {"tokens": [{"token_id": ..., "outcome": ...}, ...], "question": ...}
 _cache: dict[str, dict] = {}
@@ -65,25 +63,15 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
         }
         count += 1
 
-        # Pre-subscribe to both token books for markets:
-        #   - ending within the next PRESUB_HOURS (upcoming)
-        #   - OR already past end_date but still active (pending UMA resolution)
-        #   Window: past 7 days → next 6 hours
-        end_date_str = m.get("end_date_iso") or m.get("game_start_time")
-        if not end_date_str:
+        # Pre-subscribe to both token books for markets still accepting orders
+        if not m.get("accepting_orders", False):
             continue
-        try:
-            end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-            delta_h = (end_dt - now).total_seconds() / 3600
-            if -168 <= delta_h <= PRESUB_HOURS:
-                for token in m.get("tokens", []):
-                    tid = token.get("token_id")
-                    if tid and tid not in _subscribed:
-                        await subscribe_orderbook(tid)
-                        _subscribed.add(tid)
-                        new_subs += 1
-        except Exception:
-            pass
+        for token in m.get("tokens", []):
+            tid = token.get("token_id")
+            if tid and tid not in _subscribed:
+                await subscribe_orderbook(tid)
+                _subscribed.add(tid)
+                new_subs += 1
 
     return count, new_subs
 
