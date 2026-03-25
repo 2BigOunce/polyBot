@@ -54,11 +54,6 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
     count = 0
     new_subs = 0
 
-    if markets:
-        sample = markets[0]
-        date_fields = {k: v for k, v in sample.items() if "date" in k.lower() or "time" in k.lower() or "end" in k.lower()}
-        print(f"[market_cache] date fields in API: {date_fields}")
-
     for m in markets:
         cid = m.get("condition_id")
         if not cid:
@@ -70,14 +65,17 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
         }
         count += 1
 
-        # Pre-subscribe to both token books for markets ending within PRESUB_HOURS
+        # Pre-subscribe to both token books for markets:
+        #   - ending within the next PRESUB_HOURS (upcoming)
+        #   - OR already past end_date but still active (pending UMA resolution)
+        #   Window: past 7 days → next 6 hours
         end_date_str = m.get("end_date_iso") or m.get("game_start_time")
         if not end_date_str:
             continue
         try:
             end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
             delta_h = (end_dt - now).total_seconds() / 3600
-            if 0 < delta_h <= PRESUB_HOURS:
+            if -168 <= delta_h <= PRESUB_HOURS:
                 for token in m.get("tokens", []):
                     tid = token.get("token_id")
                     if tid and tid not in _subscribed:
