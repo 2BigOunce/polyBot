@@ -48,7 +48,6 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
         return 0, 0
 
     markets = data.get("data", []) if isinstance(data, dict) else data
-    now = datetime.now(timezone.utc)
     count = 0
     new_subs = 0
 
