@@ -213,7 +213,9 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
             async with session.get(
                 f"{CLOB_API}/book", params={"token_id": token_id}
             ) as resp:
-                book = await resp.json()
+                data = await resp.json()
+                # Treat API error responses (e.g. 404 "No orderbook exists") as no book
+                book = data if resp.status == 200 and "asks" in data else None
         except Exception as e:
             print(f"[arb] fast path book fetch failed: {e}")
 
@@ -233,7 +235,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
         await _sweep(stale, token_id, question, winner, condition_id, session)
         return
 
-    # If book was fetched and completely empty, no slow path needed — no orders to find
+    # If book was fetched and confirmed empty (has asks key but it's empty), skip slow path
     if book is not None and not book.get("asks"):
         print(f"[arb] empty book — skipping {condition_id[:14]}…")
         return
