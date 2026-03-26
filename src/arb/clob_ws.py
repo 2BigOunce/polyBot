@@ -46,6 +46,11 @@ _MISPRICING_COOLDOWN_S = 30.0
 _book_update_count = 0
 _BOOK_LOG_INTERVAL = 500
 
+# Debug: track all event_types seen
+_seen_event_types: dict[str, int] = {}
+_total_messages = 0
+_MSG_LOG_INTERVAL = 200
+
 
 def get_mispricing_queue() -> asyncio.Queue:
     return _mispricing_queue
@@ -98,7 +103,12 @@ def _handle_message(msg: dict | list) -> None:
     if not isinstance(msg, dict):
         return
 
+    global _total_messages
+    _total_messages += 1
     event_type = msg.get("event_type", "")
+    _seen_event_types[event_type] = _seen_event_types.get(event_type, 0) + 1
+    if _total_messages % _MSG_LOG_INTERVAL == 0:
+        print(f"[arb_ws] 📨 {_total_messages} msgs | types: {dict(_seen_event_types)}")
 
     # Orderbook snapshot — store in memory + pre-compute stale asks + detect mispricings
     if event_type == "book":
