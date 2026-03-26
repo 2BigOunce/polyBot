@@ -220,10 +220,15 @@ async def run_clob_ws() -> None:
 
                 # Sender task handles dynamic orderbook subscriptions concurrently
                 sender = asyncio.create_task(_sender(ws))
+                _raw_count = 0
                 try:
                     async for raw in ws:
                         if not raw:
                             continue
+                        _raw_count += 1
+                        if _raw_count <= 5:
+                            preview = raw[:200] if isinstance(raw, str) else repr(raw[:80])
+                            print(f"[arb_ws] RAW[{_raw_count}]: {preview}")
                         try:
                             _handle_message(json.loads(raw))
                         except (json.JSONDecodeError, ValueError):
