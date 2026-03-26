@@ -173,6 +173,8 @@ def _handle_message(msg: dict | list) -> None:
 
 async def _sender(ws) -> None:
     """Consume the subscription queue and send orderbook subscription messages."""
+    # Small initial delay to let the market-status subscription be processed first
+    await asyncio.sleep(0.5)
     while True:
         token_id = await _subscription_queue.get()
         try:
@@ -183,6 +185,8 @@ async def _sender(ws) -> None:
                 "markets": [],
             }))
             print(f"[arb_ws] 📖 subscribed orderbook: {token_id[:14]}…")
+            # Rate-limit: ~20 subscriptions/second to avoid INVALID OPERATION
+            await asyncio.sleep(0.05)
         except Exception as e:
             print(f"[arb_ws] subscription send failed: {e}")
             # Re-queue so the next connection attempt picks it up
