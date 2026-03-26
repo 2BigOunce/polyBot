@@ -42,6 +42,10 @@ _mispricing_queue: asyncio.Queue[dict] = asyncio.Queue()
 _mispricing_cooldown: dict[tuple[str, str], float] = {}
 _MISPRICING_COOLDOWN_S = 30.0
 
+# Diagnostic counter — logs book update rate every N updates
+_book_update_count = 0
+_BOOK_LOG_INTERVAL = 500
+
 
 def get_mispricing_queue() -> asyncio.Queue:
     return _mispricing_queue
@@ -98,6 +102,10 @@ def _handle_message(msg: dict | list) -> None:
 
     # Orderbook snapshot — store in memory + pre-compute stale asks + detect mispricings
     if event_type == "book":
+        global _book_update_count
+        _book_update_count += 1
+        if _book_update_count % _BOOK_LOG_INTERVAL == 0:
+            print(f"[arb_ws] 📊 {_book_update_count} book updates received | {len(_books)} books in memory")
         token_id = msg.get("asset_id")
         if token_id:
             asks = msg.get("asks", [])
