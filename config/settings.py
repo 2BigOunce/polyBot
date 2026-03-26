@@ -82,3 +82,11 @@ INSIDER_PENDING_TRADES = int(os.getenv("INSIDER_PENDING_TRADES", "3"))  # alert 
 ARB_MAX_STALE_PRICE  = float(os.getenv("ARB_MAX_STALE_PRICE", "0.90"))   # buy stale asks below this price
 ARB_CAPITAL          = float(os.getenv("ARB_CAPITAL", "2000"))            # USDC reserved for arb bot
 ARB_MAX_SINGLE_TRADE = float(os.getenv("ARB_MAX_SINGLE_TRADE", "50"))    # hard cap per arb execution (safety)
+
+# --- CLOB mispricing arbitrage ---
+# Buy asks priced well below the current best bid, resell immediately at bid.
+# Both conditions must hold: ratio AND absolute spread.
+CLOB_MISPRICING_ENABLED    = os.getenv("CLOB_MISPRICING_ENABLED", "false").lower() == "true"
+CLOB_MISPRICING_BID_RATIO  = float(os.getenv("CLOB_MISPRICING_BID_RATIO",  "0.80"))  # ask < best_bid * this
+CLOB_MISPRICING_MIN_SPREAD = float(os.getenv("CLOB_MISPRICING_MIN_SPREAD", "0.10"))  # ask < best_bid - this
+CLOB_MISPRICING_MAX_TRADE  = float(os.getenv("CLOB_MISPRICING_MAX_TRADE",  "50"))    # hard cap per trade (USDC)

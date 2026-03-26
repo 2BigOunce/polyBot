@@ -62,9 +62,8 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
         }
         count += 1
 
-        # Pre-subscribe to both token books for markets still accepting orders
-        if not m.get("accepting_orders", False):
-            continue
+        # Pre-subscribe to all token books for all active markets
+        # (needed for CLOB mispricing detection on any live orderbook)
         for token in m.get("tokens", []):
             tid = token.get("token_id")
             if tid and tid not in _subscribed:

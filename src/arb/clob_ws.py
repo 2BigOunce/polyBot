@@ -11,10 +11,15 @@ Two responsibilities:
 
 import asyncio
 import json
+import time
 
 import websockets
 
-from config.settings import ARB_MAX_STALE_PRICE
+from config.settings import (
+    ARB_MAX_STALE_PRICE,
+    CLOB_MISPRICING_BID_RATIO,
+    CLOB_MISPRICING_MIN_SPREAD,
+)
 
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
@@ -29,6 +34,17 @@ _stale: dict[str, list[dict]] = {}
 
 # Queue of token_ids waiting to be subscribed on the WS
 _subscription_queue: asyncio.Queue[str] = asyncio.Queue()
+
+# Queue of mispricing events for the clob_mispricing consumer
+_mispricing_queue: asyncio.Queue[dict] = asyncio.Queue()
+
+# Cooldown: avoid re-queuing the same (token_id, price) within N seconds
+_mispricing_cooldown: dict[tuple[str, str], float] = {}
+_MISPRICING_COOLDOWN_S = 30.0
+
+
+def get_mispricing_queue() -> asyncio.Queue:
+    return _mispricing_queue
 
 
 def get_closed_event(condition_id: str) -> asyncio.Event:
@@ -80,16 +96,41 @@ def _handle_message(msg: dict | list) -> None:
 
     event_type = msg.get("event_type", "")
 
-    # Orderbook snapshot — store in memory + pre-compute stale asks
+    # Orderbook snapshot — store in memory + pre-compute stale asks + detect mispricings
     if event_type == "book":
         token_id = msg.get("asset_id")
         if token_id:
             asks = msg.get("asks", [])
-            _books[token_id] = {"asks": asks, "bids": msg.get("bids", [])}
+            bids = msg.get("bids", [])
+            _books[token_id] = {"asks": asks, "bids": bids}
             _stale[token_id] = sorted(
                 [a for a in asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE],
                 key=lambda a: float(a["price"]),
             )
+
+            # Mispricing detection: cheapest ask well below the best bid
+            if bids and asks:
+                best_bid = float(bids[0]["price"])
+                cheapest_ask = min(asks, key=lambda a: float(a["price"]))
+                ask_price = float(cheapest_ask["price"])
+                ask_size  = float(cheapest_ask.get("size", 0))
+
+                if (
+                    best_bid > 0.05
+                    and ask_size > 0
+                    and ask_price < best_bid * CLOB_MISPRICING_BID_RATIO
+                    and ask_price < best_bid - CLOB_MISPRICING_MIN_SPREAD
+                ):
+                    key = (token_id, f"{ask_price:.4f}")
+                    now = time.monotonic()
+                    if now - _mispricing_cooldown.get(key, 0.0) >= _MISPRICING_COOLDOWN_S:
+                        _mispricing_cooldown[key] = now
+                        _mispricing_queue.put_nowait({
+                            "token_id":  token_id,
+                            "ask_price": ask_price,
+                            "ask_size":  ask_size,
+                            "best_bid":  best_bid,
+                        })
         return
 
     # Market closure — signal waiting scanners

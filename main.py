@@ -1,6 +1,7 @@
 import asyncio
 
 from src.alerts.telegram import run_bot
+from src.arb.clob_mispricing import run_clob_mispricing
 from src.arb.clob_ws import run_clob_ws
 from src.arb.market_cache import run_market_cache
 from src.arb.resolution_monitor import run_resolution_monitor
@@ -19,6 +20,7 @@ async def main():
         run_resolution_monitor(),
         run_clob_ws(),
         run_market_cache(),
+        run_clob_mispricing(),
         reaper(),
         position_closer(),
         run_bot(),
