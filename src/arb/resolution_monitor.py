@@ -1,10 +1,11 @@
 """
 Resolution Arbitrage — Phase 6: Resolution Monitor
 
-Subscribes to ConditionResolution events on the Gnosis CTF contract (Polygon).
-When a market resolves, immediately triggers the arb scanner to find stale orders.
+Subscribes to two resolution events on Polygon:
+  1. ConditionResolution on Gnosis CTF  → standard binary markets
+  2. OutcomeReported    on NegRisk adapter → NegRisk multi-outcome markets
 
-Works for both standard CTF markets and NegRisk markets (both resolve via CTF).
+When a market resolves, immediately triggers the arb scanner to find stale orders.
 """
 
 import asyncio
@@ -22,6 +23,60 @@ from src.arb.arb_scanner import scan_resolved_market
 CONDITION_RESOLUTION_TOPIC = Web3.to_hex(Web3.keccak(
     text="ConditionResolution(bytes32,address,bytes32,uint256,uint256[])"
 ))
+
+# keccak256("OutcomeReported(bytes32,bytes32,bool)")
+# NegRisk adapter: marketId (bytes32 indexed), questionId (bytes32 indexed), outcome (bool)
+OUTCOME_REPORTED_TOPIC = Web3.to_hex(Web3.keccak(
+    text="OutcomeReported(bytes32,bytes32,bool)"
+))
+
+# Pre-computed bytes for conditionId derivation from NegRisk questionId
+# Formula: keccak256(abi.encodePacked(NEG_RISK_ADAPTER, questionId, uint256(2)))
+_ADAPTER_BYTES = bytes.fromhex(NEG_RISK_ADAPTER[2:])   # 20 bytes, no checksum needed
+_SLOT_COUNT_2  = (2).to_bytes(32, "big")               # uint256(2)
+
+
+def _negrisk_condition_id(question_id_hex: str) -> str:
+    """Derive the CTF conditionId from a NegRisk questionId.
+
+    Mirrors NegRiskAdapter.getConditionId():
+        keccak256(abi.encodePacked(address(this), questionId, uint256(2)))
+    """
+    q_bytes = bytes.fromhex(question_id_hex[2:])
+    return "0x" + Web3.keccak(_ADAPTER_BYTES + q_bytes + _SLOT_COUNT_2).hex()
+
+
+def _decode_outcome_reported(log: dict) -> tuple[str, int] | None:
+    """
+    Decode an OutcomeReported log from the NegRisk adapter.
+
+    Event: OutcomeReported(bytes32 indexed marketId, bytes32 indexed questionId, bool outcome)
+        topics[0] = event signature
+        topics[1] = marketId  (indexed)
+        topics[2] = questionId (indexed)
+        data      = abi-encoded bool (32 bytes, last byte = 0 or 1)
+
+    Returns (condition_id, winner_index):
+        outcome=True  (YES wins) → winner_index=0
+        outcome=False (NO wins)  → winner_index=1
+    """
+    try:
+        topics = log.get("topics", [])
+        if len(topics) < 3:
+            return None
+
+        question_id_hex = topics[2]  # 0x-prefixed bytes32
+        condition_id    = _negrisk_condition_id(question_id_hex)
+
+        data    = bytes.fromhex(log["data"][2:])
+        outcome = bool(data[-1])           # last byte of 32-byte bool encoding
+        winner_index = 0 if outcome else 1  # True=YES wins(0), False=NO wins(1)
+
+        return condition_id, winner_index
+
+    except Exception as e:
+        print(f"[arb] decode OutcomeReported error: {e}")
+        return None
 
 
 def _decode_resolution(log: dict) -> tuple[str, list[int]] | None:
@@ -82,13 +137,16 @@ async def run_resolution_monitor():
             ) as ws:
                 retry_delay = 5
 
+                # Subscribe to both resolution events in a single filter (OR on topics[0]).
+                # ConditionResolution is emitted by GNOSIS_CTF (standard markets).
+                # OutcomeReported    is emitted by NEG_RISK_ADAPTER (NegRisk markets).
                 await ws.send(orjson.dumps({
                     "jsonrpc": "2.0",
                     "id": 10,
                     "method": "eth_subscribe",
                     "params": ["logs", {
                         "address": [GNOSIS_CTF, NEG_RISK_ADAPTER],
-                        "topics":  [CONDITION_RESOLUTION_TOPIC],
+                        "topics":  [[CONDITION_RESOLUTION_TOPIC, OUTCOME_REPORTED_TOPIC]],
                     }],
                 }))
 
@@ -101,34 +159,40 @@ async def run_resolution_monitor():
                     print(f"[arb] Subscribe error: {resp}")
                     raise KeyError("result")
 
-                print("[arb] Connected — listening for ConditionResolution events...")
+                print("[arb] Connected — listening for ConditionResolution + OutcomeReported events...")
 
                 async for raw_msg in ws:
                     msg = orjson.loads(raw_msg)
                     if msg.get("method") != "eth_subscription":
                         continue
 
-                    log = msg["params"]["result"]
-                    result = _decode_resolution(log)
-                    if result is None:
-                        continue
+                    log    = msg["params"]["result"]
+                    topic0 = (log.get("topics") or [""])[0]
 
-                    condition_id, payouts = result
+                    if topic0 == OUTCOME_REPORTED_TOPIC:
+                        # NegRisk market resolved
+                        result = _decode_outcome_reported(log)
+                        if result is None:
+                            continue
+                        condition_id, winner_index = result
+                        print(f"[arb] OutcomeReported — {condition_id[:14]}… winner_index={winner_index}")
+                        asyncio.create_task(scan_resolved_market(condition_id, winner_index))
 
-                    if not payouts:
-                        continue
-
-                    # Safety: reject ambiguous resolutions (multiple winners)
-                    # A valid resolution has exactly one non-zero payout
-                    winners = [i for i, p in enumerate(payouts) if p > 0]
-                    if len(winners) != 1:
-                        print(f"[arb] ⚠️  ambiguous payouts {payouts} — skipping {condition_id[:14]}…")
-                        continue
-
-                    winner_index = winners[0]
-
-                    print(f"[arb] Resolution — {condition_id[:14]}… winner_index={winner_index} (of {len(payouts)})")
-                    asyncio.create_task(scan_resolved_market(condition_id, winner_index))
+                    elif topic0 == CONDITION_RESOLUTION_TOPIC:
+                        # Standard CTF market resolved
+                        result = _decode_resolution(log)
+                        if result is None:
+                            continue
+                        condition_id, payouts = result
+                        if not payouts:
+                            continue
+                        winners = [i for i, p in enumerate(payouts) if p > 0]
+                        if len(winners) != 1:
+                            print(f"[arb] ambiguous payouts {payouts} — skipping {condition_id[:14]}…")
+                            continue
+                        winner_index = winners[0]
+                        print(f"[arb] ConditionResolution — {condition_id[:14]}… winner_index={winner_index} (of {len(payouts)})")
+                        asyncio.create_task(scan_resolved_market(condition_id, winner_index))
 
         except Exception as e:
             print(f"[arb] Connection lost: {e}. Retrying in {retry_delay}s...")
