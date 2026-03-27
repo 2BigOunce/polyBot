@@ -153,12 +153,12 @@ async def _run_maker_strategy(
     question: str,
     winner: str,
     condition_id: str,
+    book: dict,
 ) -> None:
     """Launch the MAKER arb strategy (VPS-only executor)."""
     try:
         from src.trading.arb_executor import execute_maker_arb
         session = _get_session()
-        book    = get_cached_book(token_id)
         await execute_maker_arb(
             token_id=token_id,
             question=question,
@@ -232,10 +232,6 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     if not token_id:
         return
 
-    # Launch MAKER strategy immediately in background — runs parallel to TAKER path.
-    # order_lock in arb_executor prevents balance/nonce conflicts.
-    asyncio.create_task(_run_maker_strategy(token_id, question, winner, condition_id))
-
     # Subscribe to orderbook WS immediately — book builds in RAM during CLOB delay
     await subscribe_orderbook(token_id)
 
@@ -278,6 +274,11 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     if book is not None and not book.get("asks"):
         print(f"[arb] empty book — skipping {condition_id[:14]}…")
         return
+
+    # Book exists but no stale asks — launch MAKER strategy in background.
+    # We now know the orderbook is real (not None, not empty).
+    if book is not None:
+        asyncio.create_task(_run_maker_strategy(token_id, question, winner, condition_id, book))
 
     print(f"[arb] fast path: no stale asks | {condition_id[:14]}…")
 
