@@ -148,6 +148,31 @@ async def _sweep(
         print("[arb] arb_executor not available — deploy src/trading/arb_executor.py on VPS")
 
 
+async def _run_maker_strategy(
+    token_id: str,
+    question: str,
+    winner: str,
+    condition_id: str,
+) -> None:
+    """Launch the MAKER arb strategy (VPS-only executor)."""
+    try:
+        from src.trading.arb_executor import execute_maker_arb
+        session = _get_session()
+        book    = get_cached_book(token_id)
+        await execute_maker_arb(
+            token_id=token_id,
+            question=question,
+            winner=winner,
+            condition_id=condition_id,
+            current_book=book,
+            session=session,
+        )
+    except ImportError:
+        pass  # arb_executor not deployed (local dev)
+    except Exception as e:
+        print(f"[arb] MAKER strategy error: {e}")
+
+
 async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     """
     Given a resolved conditionId and the winning outcome index:
@@ -206,6 +231,10 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
 
     if not token_id:
         return
+
+    # Launch MAKER strategy immediately in background — runs parallel to TAKER path.
+    # order_lock in arb_executor prevents balance/nonce conflicts.
+    asyncio.create_task(_run_maker_strategy(token_id, question, winner, condition_id))
 
     # Subscribe to orderbook WS immediately — book builds in RAM during CLOB delay
     await subscribe_orderbook(token_id)
