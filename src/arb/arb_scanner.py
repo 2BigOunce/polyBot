@@ -175,14 +175,24 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
         question      = cached.get("question", condition_id[:20])
         print(f"[arb] ⚡ cache hit — skipped market HTTP fetch ({condition_id[:14]}…)")
     else:
-        try:
-            async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
-                if resp.status == 404:
-                    print(f"[arb] 404 — not a Polymarket market: {condition_id[:14]}…")
-                    return
-                market = await resp.json()
-        except Exception as e:
-            print(f"[arb] market fetch failed ({condition_id[:14]}…): {e}")
+        for attempt in range(4):
+            try:
+                async with session.get(f"{CLOB_API}/markets/{condition_id}") as resp:
+                    if resp.status == 404:
+                        print(f"[arb] 404 — not a Polymarket market: {condition_id[:14]}…")
+                        return
+                    if resp.status == 429:
+                        wait = 2 ** attempt  # 1s, 2s, 4s
+                        print(f"[arb] 429 rate limit — retrying in {wait}s ({condition_id[:14]}…)")
+                        await asyncio.sleep(wait)
+                        continue
+                    market = await resp.json()
+                    break
+            except Exception as e:
+                print(f"[arb] market fetch failed ({condition_id[:14]}…): {e}")
+                return
+        else:
+            print(f"[arb] market fetch gave up after retries ({condition_id[:14]}…)")
             return
 
         tokens = market.get("tokens", [])
