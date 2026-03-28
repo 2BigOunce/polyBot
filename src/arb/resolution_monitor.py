@@ -18,6 +18,14 @@ from web3 import Web3
 from config.settings import GNOSIS_CTF, NEG_RISK_ADAPTER, RPC_URL
 from src.arb.arb_scanner import scan_resolved_market
 
+try:
+    from src.trading.maker_positioning import on_market_resolved as _maker_on_resolved
+    def _notify_maker(condition_id: str, winner_index: int) -> None:
+        asyncio.create_task(_maker_on_resolved(condition_id, winner_index))
+except ImportError:
+    def _notify_maker(condition_id: str, winner_index: int) -> None:
+        pass
+
 # keccak256("ConditionResolution(bytes32,address,bytes32,uint256,uint256[])")
 # Standard Gnosis CTF: conditionId (bytes32) indexed first, then oracle (address), then questionId (bytes32)
 CONDITION_RESOLUTION_TOPIC = Web3.to_hex(Web3.keccak(
@@ -177,6 +185,7 @@ async def run_resolution_monitor():
                         condition_id, winner_index = result
                         print(f"[arb] OutcomeReported — {condition_id[:14]}… winner_index={winner_index}")
                         asyncio.create_task(scan_resolved_market(condition_id, winner_index))
+                        _notify_maker(condition_id, winner_index)
 
                     elif topic0 == CONDITION_RESOLUTION_TOPIC:
                         # Standard CTF market resolved
@@ -193,6 +202,7 @@ async def run_resolution_monitor():
                         winner_index = winners[0]
                         print(f"[arb] ConditionResolution — {condition_id[:14]}… winner_index={winner_index} (of {len(payouts)})")
                         asyncio.create_task(scan_resolved_market(condition_id, winner_index))
+                        _notify_maker(condition_id, winner_index)
 
         except Exception as e:
             print(f"[arb] Connection lost: {e}. Retrying in {retry_delay}s...")

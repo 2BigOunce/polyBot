@@ -19,6 +19,9 @@ from config.settings import (
     ARB_MAX_STALE_PRICE,
     CLOB_MISPRICING_BID_RATIO,
     CLOB_MISPRICING_MIN_SPREAD,
+    MAKER_SANDWICH_MAX_ASK,
+    MAKER_SANDWICH_MIN_BID,
+    MAKER_SANDWICH_MIN_PROFIT,
 )
 
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -42,6 +45,42 @@ _mispricing_queue: asyncio.Queue[dict] = asyncio.Queue()
 _mispricing_cooldown: dict[tuple[str, str], float] = {}
 _MISPRICING_COOLDOWN_S = 30.0
 
+# Sandwich arb queue: ask << bid on same token → buy ask + sell bid immediately
+_sandwich_queue: asyncio.Queue[dict] = asyncio.Queue()
+_sandwich_cooldown: dict[str, float] = {}
+_SANDWICH_COOLDOWN_S = 60.0
+
+# Bid watchers: token_id → (min_bid, asyncio.Event)
+# Registered by maker_positioning after a fill; fired when best_bid >= min_bid.
+_bid_watchers: dict[str, tuple[float, asyncio.Event]] = {}
+
+
+def register_bid_watcher(token_id: str, min_bid: float) -> asyncio.Event:
+    """
+    Register interest in a high bid on token_id.
+    Returns an Event that will be set when best_bid >= min_bid.
+    If the book already has a qualifying bid, the Event is set immediately.
+    """
+    event = asyncio.Event()
+    _bid_watchers[token_id] = (min_bid, event)
+    # Fire immediately if a qualifying bid already exists in the cached book
+    book = _books.get(token_id)
+    if book:
+        bids = book.get("bids", [])
+        if bids and float(bids[0]["price"]) >= min_bid:
+            event.set()
+    return event
+
+
+def unregister_bid_watcher(token_id: str) -> None:
+    """Remove the bid watcher for a token (call after selling or at resolution).
+    Sets the event to unblock any task waiting on event.wait()."""
+    entry = _bid_watchers.pop(token_id, None)
+    if entry:
+        _, event = entry
+        event.set()  # wake up _watch_bid_and_sell so it can exit cleanly
+
+
 # Diagnostic counter — logs book update rate every N updates
 _book_update_count = 0
 _BOOK_LOG_INTERVAL = 500
@@ -54,6 +93,10 @@ _MSG_LOG_INTERVAL = 200
 
 def get_mispricing_queue() -> asyncio.Queue:
     return _mispricing_queue
+
+
+def get_sandwich_queue() -> asyncio.Queue:
+    return _sandwich_queue
 
 
 def get_closed_event(condition_id: str) -> asyncio.Event:
@@ -126,6 +169,12 @@ def _handle_message(msg: dict | list) -> None:
                 key=lambda a: float(a["price"]),
             )
 
+            # Bid watcher: notify maker_positioning when a qualifying bid appears
+            if token_id in _bid_watchers:
+                min_bid, event = _bid_watchers[token_id]
+                if not event.is_set() and bids and float(bids[0]["price"]) >= min_bid:
+                    event.set()
+
             # Mispricing detection: cheapest ask well below the best bid
             if bids and asks:
                 best_bid = float(bids[0]["price"])
@@ -149,6 +198,24 @@ def _handle_message(msg: dict | list) -> None:
                             "ask_size":  ask_size,
                             "best_bid":  best_bid,
                         })
+
+                # Sandwich arb: extreme spread — buy ask taker + sell bid taker immediately
+                if (
+                    ask_price <= MAKER_SANDWICH_MAX_ASK
+                    and best_bid  >= MAKER_SANDWICH_MIN_BID
+                    and best_bid - ask_price >= MAKER_SANDWICH_MIN_PROFIT
+                    and ask_size > 0
+                ):
+                    now = time.monotonic()
+                    if now - _sandwich_cooldown.get(token_id, 0.0) >= _SANDWICH_COOLDOWN_S:
+                        _sandwich_cooldown[token_id] = now
+                        _sandwich_queue.put_nowait({
+                            "token_id":  token_id,
+                            "ask_price": ask_price,
+                            "ask_size":  ask_size,
+                            "bid_price": best_bid,
+                        })
+
         return
 
     # Market closure — signal waiting scanners
@@ -230,8 +297,8 @@ async def run_clob_ws() -> None:
                         if not raw:
                             continue
                         _raw_count += 1
-                        if _raw_count <= 5:
-                            preview = raw[:200] if isinstance(raw, str) else repr(raw[:80])
+                        if _raw_count <= 20:
+                            preview = raw[:300] if isinstance(raw, str) else repr(raw[:100])
                             print(f"[arb_ws] RAW[{_raw_count}]: {preview}")
                         try:
                             _handle_message(json.loads(raw))

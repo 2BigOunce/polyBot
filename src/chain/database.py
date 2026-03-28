@@ -95,6 +95,32 @@ def init_db():
             pass
 
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS maker_orders (
+                order_id      TEXT PRIMARY KEY,
+                market_id     TEXT NOT NULL,
+                token_id      TEXT NOT NULL,
+                outcome       TEXT NOT NULL,
+                question      TEXT,
+                price         REAL NOT NULL,
+                shares        REAL NOT NULL,
+                placed_at     TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'open',
+                filled_shares REAL,
+                sell_order_id TEXT,
+                pnl           REAL,
+                closed_at     TEXT
+            )
+        """)
+        try:
+            conn.execute("ALTER TABLE maker_orders ADD COLUMN filled_shares REAL")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE maker_orders ADD COLUMN sell_order_id TEXT")
+        except Exception:
+            pass
+
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS super_alerts (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 wallet          TEXT NOT NULL,

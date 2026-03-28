@@ -11,9 +11,15 @@ from src.clob.onchain_tracker import run_onchain_watcher
 from src.clob.tracker import run_tracker
 from src.trading.position_closer import position_closer
 
+try:
+    from src.trading.maker_positioning import run_maker_positioning
+    _HAS_MAKER = True
+except ImportError:
+    _HAS_MAKER = False
+
 
 async def main():
-    await asyncio.gather(
+    tasks = [
         monitor_deposits(),
         run_tracker(),
         run_onchain_watcher(),
@@ -24,7 +30,10 @@ async def main():
         reaper(),
         position_closer(),
         run_bot(),
-    )
+    ]
+    if _HAS_MAKER:
+        tasks.append(run_maker_positioning())
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

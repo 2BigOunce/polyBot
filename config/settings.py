@@ -90,3 +90,23 @@ CLOB_MISPRICING_ENABLED    = os.getenv("CLOB_MISPRICING_ENABLED", "false").lower
 CLOB_MISPRICING_BID_RATIO  = float(os.getenv("CLOB_MISPRICING_BID_RATIO",  "0.80"))  # ask < best_bid * this
 CLOB_MISPRICING_MIN_SPREAD = float(os.getenv("CLOB_MISPRICING_MIN_SPREAD", "0.10"))  # ask < best_bid - this
 CLOB_MISPRICING_MAX_TRADE  = float(os.getenv("CLOB_MISPRICING_MAX_TRADE",  "50"))    # hard cap per trade (USDC)
+
+# --- MAKER pre-positioning strategy ---
+# Place resting BUY orders at a low price on both outcomes of low-liquidity markets.
+# Profits when a counterparty triggers the CLOB MINT mechanism near resolution.
+MAKER_POSITIONING_ENABLED  = os.getenv("MAKER_POSITIONING_ENABLED", "false").lower() == "true"
+MAKER_MAX_MARKETS          = int(os.getenv("MAKER_MAX_MARKETS", "6"))          # max concurrent markets
+MAKER_SIZE_PER_MARKET      = float(os.getenv("MAKER_SIZE_PER_MARKET", "150"))  # USDC per market (split across 2 sides)
+MAKER_ORDER_PRICE          = float(os.getenv("MAKER_ORDER_PRICE", "0.05"))     # limit price per token
+MAKER_CANCEL_TIMEOUT_DAYS  = int(os.getenv("MAKER_CANCEL_TIMEOUT_DAYS", "3")) # cancel unfilled orders after N days
+MAKER_MAX_TOTAL_EXPOSURE   = float(os.getenv("MAKER_MAX_TOTAL_EXPOSURE", "2000"))  # USDC cap across all markets
+MAKER_MAX_VOLUME           = float(os.getenv("MAKER_MAX_VOLUME", "100000"))    # skip markets with volume > this
+MAKER_MAX_DAYS_TO_CLOSE    = int(os.getenv("MAKER_MAX_DAYS_TO_CLOSE", "5"))    # skip markets closing after this many days
+MAKER_SELL_PRICE           = float(os.getenv("MAKER_SELL_PRICE", "0.90"))      # limit sell fallback if no good bid
+MAKER_MIN_SELL_BID         = float(os.getenv("MAKER_MIN_SELL_BID", "0.50"))    # min bid to trigger immediate taker sell
+
+# Sandwich arb: fire when ask < MAX_ASK and bid > MIN_BID simultaneously
+MAKER_SANDWICH_MAX_ASK     = float(os.getenv("MAKER_SANDWICH_MAX_ASK",    "0.20"))  # max ask price to buy
+MAKER_SANDWICH_MIN_BID     = float(os.getenv("MAKER_SANDWICH_MIN_BID",    "0.80"))  # min bid price to sell into
+MAKER_SANDWICH_MIN_PROFIT  = float(os.getenv("MAKER_SANDWICH_MIN_PROFIT", "0.50"))  # min bid-ask spread
+MAKER_SANDWICH_MAX_TRADE   = float(os.getenv("MAKER_SANDWICH_MAX_TRADE",  "100"))   # USDC cap per trade
