@@ -10,7 +10,9 @@ Two responsibilities:
 """
 
 import asyncio
+import csv
 import json
+import os
 import time
 
 import websockets
@@ -49,6 +51,30 @@ _MISPRICING_COOLDOWN_S = 30.0
 _sandwich_queue: asyncio.Queue[dict] = asyncio.Queue()
 _sandwich_cooldown: dict[str, float] = {}
 _SANDWICH_COOLDOWN_S = 60.0
+
+# Spread observation log — records all extreme spreads seen for calibration
+_SPREAD_OBS_FILE = "logs/spread_observations.csv"
+_spread_obs_cooldown: dict[str, float] = {}
+_SPREAD_OBS_COOLDOWN_S = 10.0   # log same token at most every 10s
+_SPREAD_OBS_MIN_ASK   = 0.35    # wider than sandwich threshold — captures near-misses
+_SPREAD_OBS_MIN_BID   = 0.65
+
+def _log_spread(token_id: str, ask_price: float, bid_price: float, ask_size: float) -> None:
+    """Append a spread observation to the CSV log file."""
+    os.makedirs("logs", exist_ok=True)
+    write_header = not os.path.exists(_SPREAD_OBS_FILE)
+    with open(_SPREAD_OBS_FILE, "a", newline="") as f:
+        w = csv.writer(f)
+        if write_header:
+            w.writerow(["timestamp", "token_id", "ask_price", "bid_price", "spread", "ask_size"])
+        w.writerow([
+            time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+            token_id,
+            round(ask_price, 4),
+            round(bid_price, 4),
+            round(bid_price - ask_price, 4),
+            round(ask_size, 2),
+        ])
 
 # Bid watchers: token_id → (min_bid, asyncio.Event)
 # Registered by maker_positioning after a fill; fired when best_bid >= min_bid.
@@ -198,6 +224,17 @@ def _handle_message(msg: dict | list) -> None:
                             "ask_size":  ask_size,
                             "best_bid":  best_bid,
                         })
+
+                # Spread observation logging (wider thresholds — for calibration)
+                if ask_price <= _SPREAD_OBS_MIN_ASK and best_bid >= _SPREAD_OBS_MIN_BID:
+                    now = time.monotonic()
+                    if now - _spread_obs_cooldown.get(token_id, 0.0) >= _SPREAD_OBS_COOLDOWN_S:
+                        _spread_obs_cooldown[token_id] = now
+                        _log_spread(token_id, ask_price, best_bid, ask_size)
+                        print(
+                            f"[arb_ws] 👁 spread obs ask={ask_price:.3f} bid={best_bid:.3f} "
+                            f"spread={best_bid-ask_price:.3f} | {token_id[:14]}…"
+                        )
 
                 # Sandwich arb: extreme spread — buy ask taker + sell bid taker immediately
                 if (
