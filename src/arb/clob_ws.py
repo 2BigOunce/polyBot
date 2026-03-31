@@ -371,7 +371,7 @@ async def _run_orderbook_ws() -> None:
                     if not raw:
                         continue
                     _raw_count += 1
-                    if _raw_count <= 10 or _raw_count % 500 == 0:
+                    if _raw_count <= 100 or _raw_count % 500 == 0:
                         preview = raw[:200] if isinstance(raw, str) else repr(raw[:100])
                         print(f"[arb_ws] BOOK RAW[{_raw_count}]: {preview}")
                     try:
