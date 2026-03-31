@@ -64,20 +64,9 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
         }
         count += 1
 
-    # Pre-subscribe only to markets closing within PRESUB_HOURS
-    now      = datetime.now(tz=timezone.utc)
-    cutoff   = now + timedelta(hours=PRESUB_HOURS)
+    # Pre-subscribe to all token books in one bulk call
     new_tids = []
     for m in markets:
-        end_raw = m.get("end_date_iso") or m.get("endDate") or ""
-        try:
-            end_dt = datetime.fromisoformat(end_raw.replace("Z", "+00:00"))
-            if end_dt.tzinfo is None:
-                end_dt = end_dt.replace(tzinfo=timezone.utc)
-        except (ValueError, AttributeError):
-            continue
-        if end_dt < now or end_dt > cutoff:
-            continue
         for token in m.get("tokens", []):
             tid = token.get("token_id")
             if tid and tid not in _subscribed:

@@ -312,10 +312,9 @@ async def _sender(ws) -> None:
 
         try:
             await ws.send(orjson.dumps({
-                "auth": {},
-                "type": "Market",
+                "type": "market",
                 "assets_ids": batch,
-                "markets": [],
+                "custom_feature_enabled": True,
             }).decode())
             print(f"[arb_ws] 📖 subscribed {len(batch)} orderbooks (first: {batch[0][:14]}…)")
             await asyncio.sleep(2.0)  # rate-limit between batches
@@ -347,10 +346,9 @@ async def run_clob_ws() -> None:
 
                 # Subscribe to all market status events
                 await ws.send(orjson.dumps({
-                    "auth": {},
-                    "type": "Market",
-                    "markets": [],
+                    "type": "market",
                     "assets_ids": [],
+                    "custom_feature_enabled": True,
                 }).decode())
 
                 print("[arb_ws] Connected — listening for market closures...")
