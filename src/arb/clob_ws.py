@@ -11,10 +11,10 @@ Two responsibilities:
 
 import asyncio
 import csv
-import json
 import os
 import time
 
+import orjson
 import websockets
 
 from config.settings import (
@@ -247,6 +247,7 @@ def _handle_message(msg: dict | list) -> None:
                         )
 
                 # Sandwich arb: extreme spread — buy ask taker + sell bid taker immediately
+                # put_nowait directly (no intermediate queue.get() tick)
                 if (
                     ask_price <= MAKER_SANDWICH_MAX_ASK
                     and best_bid  >= MAKER_SANDWICH_MIN_BID
@@ -261,6 +262,7 @@ def _handle_message(msg: dict | list) -> None:
                             "ask_price": ask_price,
                             "ask_size":  ask_size,
                             "bid_price": best_bid,
+                            "detected_at": time.monotonic(),
                         })
 
         return
@@ -309,12 +311,12 @@ async def _sender(ws) -> None:
                 await asyncio.sleep(0.02)
 
         try:
-            await ws.send(json.dumps({
+            await ws.send(orjson.dumps({
                 "auth": {},
                 "type": "Market",
                 "assets_ids": batch,
                 "markets": [],
-            }))
+            }).decode())
             print(f"[arb_ws] 📖 subscribed {len(batch)} orderbooks (first: {batch[0][:14]}…)")
             await asyncio.sleep(0.5)  # rate-limit between batches
         except Exception as e:
@@ -344,12 +346,12 @@ async def run_clob_ws() -> None:
                 retry_delay = 5
 
                 # Subscribe to all market status events
-                await ws.send(json.dumps({
+                await ws.send(orjson.dumps({
                     "auth": {},
                     "type": "Market",
                     "markets": [],
                     "assets_ids": [],
-                }))
+                }).decode())
 
                 print("[arb_ws] Connected — listening for market closures...")
 
@@ -365,8 +367,8 @@ async def run_clob_ws() -> None:
                             preview = raw[:300] if isinstance(raw, str) else repr(raw[:100])
                             print(f"[arb_ws] RAW[{_raw_count}]: {preview}")
                         try:
-                            _handle_message(json.loads(raw))
-                        except (json.JSONDecodeError, ValueError):
+                            _handle_message(orjson.loads(raw))
+                        except (orjson.JSONDecodeError, ValueError):
                             pass  # ACK / ping frames from CLOB WS are not JSON
                         except Exception as e:
                             print(f"[arb_ws] error: {e}")
