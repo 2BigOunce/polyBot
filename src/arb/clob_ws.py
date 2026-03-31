@@ -107,12 +107,9 @@ def unregister_bid_watcher(token_id: str) -> None:
         event.set()  # wake up _watch_bid_and_sell so it can exit cleanly
 
 
-# Diagnostic counter — logs book update rate every N updates
+# Diagnostic counters
 _book_update_count = 0
 _BOOK_LOG_INTERVAL = 100
-
-# Debug: track all event_types seen
-_seen_event_types: dict[str, int] = {}
 _total_messages = 0
 _MSG_LOG_INTERVAL = 200
 
@@ -172,6 +169,122 @@ def get_cached_stale(token_id: str) -> list[dict] | None:
     return _stale.get(token_id)
 
 
+def _run_detection(token_id: str, asks: list, bids: list) -> None:
+    """Run sandwich / mispricing / spread detection on a fresh book state."""
+    if not bids or not asks:
+        return
+
+    best_bid     = float(bids[0]["price"])
+    cheapest_ask = min(asks, key=lambda a: float(a["price"]))
+    ask_price    = float(cheapest_ask["price"])
+    ask_size     = float(cheapest_ask.get("size", 0))
+
+    # Mispricing detection
+    if (
+        best_bid > 0.05
+        and ask_size > 0
+        and ask_price < best_bid * CLOB_MISPRICING_BID_RATIO
+        and ask_price < best_bid - CLOB_MISPRICING_MIN_SPREAD
+    ):
+        key = (token_id, f"{ask_price:.4f}")
+        now = time.monotonic()
+        if now - _mispricing_cooldown.get(key, 0.0) >= _MISPRICING_COOLDOWN_S:
+            _mispricing_cooldown[key] = now
+            _mispricing_queue.put_nowait({
+                "token_id":  token_id,
+                "ask_price": ask_price,
+                "ask_size":  ask_size,
+                "best_bid":  best_bid,
+            })
+
+    # Spread observation logging (wider thresholds — for calibration)
+    if ask_price <= _SPREAD_OBS_MIN_ASK and best_bid >= _SPREAD_OBS_MIN_BID:
+        now = time.monotonic()
+        if now - _spread_obs_cooldown.get(token_id, 0.0) >= _SPREAD_OBS_COOLDOWN_S:
+            _spread_obs_cooldown[token_id] = now
+            _log_spread(token_id, ask_price, best_bid, ask_size)
+            print(
+                f"[arb_ws] 👁 spread obs ask={ask_price:.3f} bid={best_bid:.3f} "
+                f"spread={best_bid-ask_price:.3f} | {token_id[:14]}…"
+            )
+
+    # Sandwich arb
+    if (
+        ask_price <= MAKER_SANDWICH_MAX_ASK
+        and best_bid  >= MAKER_SANDWICH_MIN_BID
+        and best_bid - ask_price >= MAKER_SANDWICH_MIN_PROFIT
+        and ask_size > 0
+    ):
+        now = time.monotonic()
+        if now - _sandwich_cooldown.get(token_id, 0.0) >= _SANDWICH_COOLDOWN_S:
+            _sandwich_cooldown[token_id] = now
+            _sandwich_queue.put_nowait({
+                "token_id":  token_id,
+                "ask_price": ask_price,
+                "ask_size":  ask_size,
+                "bid_price": best_bid,
+                "detected_at": time.monotonic(),
+            })
+
+
+def _store_book(token_id: str, asks: list, bids: list) -> None:
+    """Replace cached book, recompute stale asks, trigger detection."""
+    global _book_update_count
+    _book_update_count += 1
+    if _book_update_count % _BOOK_LOG_INTERVAL == 0:
+        print(f"[arb_ws] 📊 {_book_update_count} book updates | {len(_books)} books in memory")
+
+    _books[token_id] = {"asks": asks, "bids": bids}
+    _stale[token_id] = sorted(
+        [a for a in asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE],
+        key=lambda a: float(a["price"]),
+    )
+
+    # Bid watcher
+    if token_id in _bid_watchers:
+        min_bid, event = _bid_watchers[token_id]
+        if not event.is_set() and bids and float(bids[0]["price"]) >= min_bid:
+            event.set()
+
+    _run_detection(token_id, asks, bids)
+
+
+def _apply_changes(token_id: str, changes: list[dict]) -> None:
+    """Apply incremental price_changes delta to the cached book, then re-detect."""
+    book = _books.get(token_id)
+    if book is None:
+        return  # No snapshot yet — delta cannot be applied
+
+    bid_map = {e["price"]: e for e in book["bids"]}
+    ask_map = {e["price"]: e for e in book["asks"]}
+
+    for ch in changes:
+        price = ch.get("price", "")
+        size  = str(ch.get("size", "0"))
+        side  = (ch.get("side") or "").upper()
+
+        if side == "BUY":
+            if float(size) == 0:
+                bid_map.pop(price, None)
+            else:
+                bid_map[price] = {"price": price, "size": size}
+        elif side == "SELL":
+            if float(size) == 0:
+                ask_map.pop(price, None)
+            else:
+                ask_map[price] = {"price": price, "size": size}
+
+    new_bids = sorted(bid_map.values(), key=lambda x: float(x["price"]), reverse=True)
+    new_asks = sorted(ask_map.values(), key=lambda x: float(x["price"]))
+
+    _books[token_id] = {"bids": new_bids, "asks": new_asks}
+    _stale[token_id] = sorted(
+        [a for a in new_asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE],
+        key=lambda a: float(a["price"]),
+    )
+    _run_detection(token_id, new_asks, new_bids)
+
+
 def _handle_message(msg: dict | list) -> None:
     """Process a WS message. Handles both list (batch) and dict (single) formats."""
     if isinstance(msg, list):
@@ -184,107 +297,47 @@ def _handle_message(msg: dict | list) -> None:
 
     global _total_messages
     _total_messages += 1
-    event_type = msg.get("event_type", "")
-    _seen_event_types[event_type] = _seen_event_types.get(event_type, 0) + 1
     if _total_messages % _MSG_LOG_INTERVAL == 0:
-        print(f"[arb_ws] 📨 {_total_messages} msgs | types: {dict(_seen_event_types)}")
+        print(f"[arb_ws] 📨 {_total_messages} msgs | books: {len(_books)}")
 
-    # Orderbook snapshot — store in memory + pre-compute stale asks + detect mispricings
-    if event_type == "book":
-        global _book_update_count
-        _book_update_count += 1
-        if _book_update_count % _BOOK_LOG_INTERVAL == 0:
-            print(f"[arb_ws] 📊 {_book_update_count} book updates received | {len(_books)} books in memory")
-        token_id = msg.get("asset_id")
-        if token_id:
-            asks = msg.get("asks", [])
-            bids = msg.get("bids", [])
-            _books[token_id] = {"asks": asks, "bids": bids}
-            _stale[token_id] = sorted(
-                [a for a in asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE],
-                key=lambda a: float(a["price"]),
-            )
-
-            # Bid watcher: notify maker_positioning when a qualifying bid appears
-            if token_id in _bid_watchers:
-                min_bid, event = _bid_watchers[token_id]
-                if not event.is_set() and bids and float(bids[0]["price"]) >= min_bid:
-                    event.set()
-
-            # Mispricing detection: cheapest ask well below the best bid
-            if bids and asks:
-                best_bid = float(bids[0]["price"])
-                cheapest_ask = min(asks, key=lambda a: float(a["price"]))
-                ask_price = float(cheapest_ask["price"])
-                ask_size  = float(cheapest_ask.get("size", 0))
-
-                if (
-                    best_bid > 0.05
-                    and ask_size > 0
-                    and ask_price < best_bid * CLOB_MISPRICING_BID_RATIO
-                    and ask_price < best_bid - CLOB_MISPRICING_MIN_SPREAD
-                ):
-                    key = (token_id, f"{ask_price:.4f}")
-                    now = time.monotonic()
-                    if now - _mispricing_cooldown.get(key, 0.0) >= _MISPRICING_COOLDOWN_S:
-                        _mispricing_cooldown[key] = now
-                        _mispricing_queue.put_nowait({
-                            "token_id":  token_id,
-                            "ask_price": ask_price,
-                            "ask_size":  ask_size,
-                            "best_bid":  best_bid,
-                        })
-
-                # Spread observation logging (wider thresholds — for calibration)
-                if ask_price <= _SPREAD_OBS_MIN_ASK and best_bid >= _SPREAD_OBS_MIN_BID:
-                    now = time.monotonic()
-                    if now - _spread_obs_cooldown.get(token_id, 0.0) >= _SPREAD_OBS_COOLDOWN_S:
-                        _spread_obs_cooldown[token_id] = now
-                        _log_spread(token_id, ask_price, best_bid, ask_size)
-                        print(
-                            f"[arb_ws] 👁 spread obs ask={ask_price:.3f} bid={best_bid:.3f} "
-                            f"spread={best_bid-ask_price:.3f} | {token_id[:14]}…"
-                        )
-
-                # Sandwich arb: extreme spread — buy ask taker + sell bid taker immediately
-                # put_nowait directly (no intermediate queue.get() tick)
-                if (
-                    ask_price <= MAKER_SANDWICH_MAX_ASK
-                    and best_bid  >= MAKER_SANDWICH_MIN_BID
-                    and best_bid - ask_price >= MAKER_SANDWICH_MIN_PROFIT
-                    and ask_size > 0
-                ):
-                    now = time.monotonic()
-                    if now - _sandwich_cooldown.get(token_id, 0.0) >= _SANDWICH_COOLDOWN_S:
-                        _sandwich_cooldown[token_id] = now
-                        _sandwich_queue.put_nowait({
-                            "token_id":  token_id,
-                            "ask_price": ask_price,
-                            "ask_size":  ask_size,
-                            "bid_price": best_bid,
-                            "detected_at": time.monotonic(),
-                        })
-
+    # --- Market closure — signal waiting scanners ---
+    if msg.get("closed"):
+        condition_id = (
+            msg.get("condition_id") or msg.get("conditionId")
+            or msg.get("market_id") or msg.get("market")
+        )
+        if condition_id:
+            event = _closed_events.get(condition_id)
+            if event and not event.is_set():
+                print(f"[arb_ws] ✅ closed via WS push: {condition_id[:14]}…")
+                event.set()
         return
 
-    # Market closure — signal waiting scanners
-    closed = msg.get("closed", False)
-    if not closed:
+    asset_id = msg.get("asset_id")
+
+    # --- Full book snapshot: {asset_id, bids: [...], asks: [...]} ---
+    if asset_id and "bids" in msg and "asks" in msg:
+        _store_book(asset_id, msg["asks"], msg["bids"])
         return
 
-    condition_id = (
-        msg.get("condition_id")
-        or msg.get("conditionId")
-        or msg.get("market_id")
-        or msg.get("market")
-    )
-    if not condition_id:
+    # --- Incremental delta: {price_changes: [{asset_id, price, side, size}, ...]} ---
+    price_changes = msg.get("price_changes")
+    if price_changes:
+        by_asset: dict[str, list] = {}
+        for ch in price_changes:
+            aid = ch.get("asset_id")
+            if aid:
+                by_asset.setdefault(aid, []).append(ch)
+        for aid, changes in by_asset.items():
+            _apply_changes(aid, changes)
         return
 
-    event = _closed_events.get(condition_id)
-    if event and not event.is_set():
-        print(f"[arb_ws] ✅ closed via WS push: {condition_id[:14]}…")
-        event.set()
+    # --- Best bid/ask tick: {asset_id, best_bid, best_ask} — re-detect from cached book ---
+    if asset_id and ("best_bid" in msg or "best_ask" in msg):
+        book = _books.get(asset_id)
+        if book:
+            _run_detection(asset_id, book["asks"], book["bids"])
+        return
 
 
 async def _run_market_status_ws() -> None:
