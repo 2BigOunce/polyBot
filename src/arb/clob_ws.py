@@ -318,7 +318,7 @@ async def _sender(ws) -> None:
                 "markets": [],
             }).decode())
             print(f"[arb_ws] 📖 subscribed {len(batch)} orderbooks (first: {batch[0][:14]}…)")
-            await asyncio.sleep(0.5)  # rate-limit between batches
+            await asyncio.sleep(2.0)  # rate-limit between batches
         except Exception as e:
             print(f"[arb_ws] subscription send failed: {e}")
             # Re-queue so the next connection attempt picks them up
