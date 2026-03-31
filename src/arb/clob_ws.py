@@ -109,7 +109,7 @@ def unregister_bid_watcher(token_id: str) -> None:
 
 # Diagnostic counter — logs book update rate every N updates
 _book_update_count = 0
-_BOOK_LOG_INTERVAL = 500
+_BOOK_LOG_INTERVAL = 100
 
 # Debug: track all event_types seen
 _seen_event_types: dict[str, int] = {}
@@ -363,8 +363,8 @@ async def run_clob_ws() -> None:
                         if not raw:
                             continue
                         _raw_count += 1
-                        if _raw_count <= 20:
-                            preview = raw[:300] if isinstance(raw, str) else repr(raw[:100])
+                        if _raw_count <= 50 or _raw_count % 100 == 0:
+                            preview = raw[:200] if isinstance(raw, str) else repr(raw[:100])
                             print(f"[arb_ws] RAW[{_raw_count}]: {preview}")
                         try:
                             _handle_message(orjson.loads(raw))
