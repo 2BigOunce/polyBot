@@ -15,7 +15,7 @@ import asyncio
 
 import aiohttp
 
-from src.arb.clob_ws import subscribe_orderbook
+from src.arb.clob_ws import subscribe_orderbook_bulk
 
 CLOB_API         = "https://clob.polymarket.com"
 REFRESH_INTERVAL = 1800  # 30 minutes
@@ -62,14 +62,17 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
         }
         count += 1
 
-        # Pre-subscribe to all token books for all active markets
-        # (needed for CLOB mispricing detection on any live orderbook)
+    # Pre-subscribe to all token books in one bulk call (avoids yielding per token)
+    new_tids = []
+    for m in markets:
         for token in m.get("tokens", []):
             tid = token.get("token_id")
             if tid and tid not in _subscribed:
-                await subscribe_orderbook(tid)
+                new_tids.append(tid)
                 _subscribed.add(tid)
-                new_subs += 1
+    if new_tids:
+        subscribe_orderbook_bulk(new_tids)
+        new_subs = len(new_tids)
 
     return count, new_subs
 

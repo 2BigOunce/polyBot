@@ -143,7 +143,17 @@ async def subscribe_orderbook(token_id: str) -> None:
     Call this immediately after detecting an on-chain resolution to use the
     CLOB processing delay (~1-5s) to pre-fill the in-memory book.
     """
-    await _subscription_queue.put(token_id)
+    _subscription_queue.put_nowait(token_id)
+
+
+def subscribe_orderbook_bulk(token_ids: list[str]) -> None:
+    """
+    Queue multiple token_ids for orderbook subscription without yielding.
+    Use this from market_cache to fill the queue in one shot so the sender
+    can batch them efficiently.
+    """
+    for tid in token_ids:
+        _subscription_queue.put_nowait(tid)
 
 
 def get_cached_book(token_id: str) -> dict | None:
