@@ -12,15 +12,14 @@ so the book is already in RAM when the resolution fires.
 """
 
 import asyncio
-from datetime import datetime, timezone, timedelta
 
 import aiohttp
 
 from src.arb.clob_ws import subscribe_orderbook_bulk
 
+GAMMA_API        = "https://gamma-api.polymarket.com"
 CLOB_API         = "https://clob.polymarket.com"
 REFRESH_INTERVAL = 1800  # 30 minutes
-PRESUB_HOURS     = 24    # only pre-subscribe to markets closing within this window
 
 # condition_id → {"tokens": [{"token_id": ..., "outcome": ...}, ...], "question": ...}
 _cache: dict[str, dict] = {}
@@ -36,47 +35,57 @@ def get_cached_market(condition_id: str) -> dict | None:
 
 async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
     """
-    Fetch active markets, populate cache, and pre-subscribe to books of
-    markets ending within PRESUB_HOURS. Returns (cached_count, new_subscriptions).
+    Fetch active markets from Gamma API, populate cache, pre-subscribe to orderbooks.
+    Returns (cached_count, new_subscriptions).
     """
-    try:
-        async with session.get(
-            f"{CLOB_API}/markets",
-            params={"active": "true", "limit": "500"},
-        ) as resp:
-            data = await resp.json()
-    except Exception as e:
-        print(f"[market_cache] fetch failed: {e}")
-        return 0, 0
-
-    markets = data.get("data", []) if isinstance(data, dict) else data
-    count = 0
-    new_subs = 0
-
-    for m in markets:
-        cid = m.get("condition_id")
-        if not cid:
-            continue
-
-        _cache[cid] = {
-            "tokens":   m.get("tokens", []),
-            "question": m.get("question", cid[:20]),
-        }
-        count += 1
-
-    # Pre-subscribe to all token books in one bulk call
+    count    = 0
     new_tids = []
-    for m in markets:
-        for token in m.get("tokens", []):
-            tid = token.get("token_id")
-            if tid and tid not in _subscribed:
-                new_tids.append(tid)
-                _subscribed.add(tid)
+    offset   = 0
+
+    while True:
+        try:
+            async with session.get(
+                f"{GAMMA_API}/markets",
+                params={"active": "true", "closed": "false", "limit": "100", "offset": str(offset)},
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    break
+                data = await resp.json()
+        except Exception as e:
+            print(f"[market_cache] fetch failed: {e}")
+            break
+
+        if not isinstance(data, list) or not data:
+            break
+
+        for m in data:
+            cid = m.get("conditionId") or m.get("condition_id")
+            if not cid:
+                continue
+
+            tokens = m.get("tokens") or []
+            _cache[cid] = {
+                "tokens":   [{"token_id": t.get("token_id") or t.get("tokenId", ""), "outcome": t.get("outcome", "")} for t in tokens],
+                "question": m.get("question", cid[:20]),
+            }
+            count += 1
+
+            for t in tokens:
+                tid = t.get("token_id") or t.get("tokenId", "")
+                if tid and tid not in _subscribed:
+                    new_tids.append(tid)
+                    _subscribed.add(tid)
+
+        if len(data) < 100:
+            break
+        offset += 100
+        await asyncio.sleep(0.2)
+
     if new_tids:
         subscribe_orderbook_bulk(new_tids)
-        new_subs = len(new_tids)
 
-    return count, new_subs
+    return count, len(new_tids)
 
 
 async def run_market_cache() -> None:
