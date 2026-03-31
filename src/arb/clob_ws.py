@@ -275,26 +275,43 @@ def _handle_message(msg: dict | list) -> None:
         event.set()
 
 
+_SUBSCRIPTION_BATCH_SIZE = 50   # max asset_ids per WS message
+_SUBSCRIPTION_BATCH_WAIT = 0.1  # seconds to wait for more items before sending
+
 async def _sender(ws) -> None:
-    """Consume the subscription queue and send orderbook subscription messages."""
+    """Consume the subscription queue and send batched orderbook subscription messages."""
     # Small initial delay to let the market-status subscription be processed first
     await asyncio.sleep(0.5)
     while True:
+        # Wait for at least one item
         token_id = await _subscription_queue.get()
+        batch = [token_id]
+
+        # Collect more items that are already queued (up to batch size)
+        deadline = asyncio.get_event_loop().time() + _SUBSCRIPTION_BATCH_WAIT
+        while len(batch) < _SUBSCRIPTION_BATCH_SIZE:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                batch.append(_subscription_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                await asyncio.sleep(0.02)
+
         try:
             await ws.send(json.dumps({
                 "auth": {},
                 "type": "Market",
-                "assets_ids": [token_id],
+                "assets_ids": batch,
                 "markets": [],
             }))
-            print(f"[arb_ws] 📖 subscribed orderbook: {token_id[:14]}…")
-            # Rate-limit: ~20 subscriptions/second to avoid INVALID OPERATION
-            await asyncio.sleep(0.05)
+            print(f"[arb_ws] 📖 subscribed {len(batch)} orderbooks (first: {batch[0][:14]}…)")
+            await asyncio.sleep(0.5)  # rate-limit between batches
         except Exception as e:
             print(f"[arb_ws] subscription send failed: {e}")
-            # Re-queue so the next connection attempt picks it up
-            await _subscription_queue.put(token_id)
+            # Re-queue so the next connection attempt picks them up
+            for tid in batch:
+                await _subscription_queue.put(tid)
             return
 
 
