@@ -287,93 +287,119 @@ def _handle_message(msg: dict | list) -> None:
         event.set()
 
 
-_SUBSCRIPTION_BATCH_SIZE = 50   # max asset_ids per WS message
-_SUBSCRIPTION_BATCH_WAIT = 0.1  # seconds to wait for more items before sending
-
-async def _sender(ws) -> None:
-    """Consume the subscription queue and send batched orderbook subscription messages."""
-    # Small initial delay to let the market-status subscription be processed first
-    await asyncio.sleep(0.5)
-    while True:
-        # Wait for at least one item
-        token_id = await _subscription_queue.get()
-        batch = [token_id]
-
-        # Collect more items that are already queued (up to batch size)
-        deadline = asyncio.get_event_loop().time() + _SUBSCRIPTION_BATCH_WAIT
-        while len(batch) < _SUBSCRIPTION_BATCH_SIZE:
-            remaining = deadline - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                break
-            try:
-                batch.append(_subscription_queue.get_nowait())
-            except asyncio.QueueEmpty:
-                await asyncio.sleep(0.02)
-
-        try:
-            await ws.send(orjson.dumps({
-                "type": "market",
-                "assets_ids": batch,
-                "custom_feature_enabled": True,
-            }).decode())
-            print(f"[arb_ws] 📖 subscribed {len(batch)} orderbooks (first: {batch[0][:14]}…)")
-            await asyncio.sleep(2.0)  # rate-limit between batches
-        except Exception as e:
-            print(f"[arb_ws] subscription send failed: {e}")
-            # Re-queue so the next connection attempt picks them up
-            for tid in batch:
-                await _subscription_queue.put(tid)
-            return
-
-
-async def run_clob_ws() -> None:
+async def _run_market_status_ws() -> None:
     """
-    Maintain a persistent WS connection to the Polymarket CLOB.
-    Spawns a sender task for dynamic subscriptions.
-    Run via asyncio.gather() in main.py.
+    WS connection #1: subscribes to market closure events only (assets_ids=[]).
+    One message per connection — no additional subscriptions sent.
     """
     retry_delay = 5
-
     while True:
         try:
             async with websockets.connect(
-                CLOB_WS,
-                ping_interval=20,
-                ping_timeout=10,
-                open_timeout=15,
+                CLOB_WS, ping_interval=20, ping_timeout=10, open_timeout=15,
             ) as ws:
                 retry_delay = 5
-
-                # Subscribe to all market status events
                 await ws.send(orjson.dumps({
                     "type": "market",
                     "assets_ids": [],
                     "custom_feature_enabled": True,
                 }).decode())
-
                 print("[arb_ws] Connected — listening for market closures...")
-
-                # Sender task handles dynamic orderbook subscriptions concurrently
-                sender = asyncio.create_task(_sender(ws))
-                _raw_count = 0
-                try:
-                    async for raw in ws:
-                        if not raw:
-                            continue
-                        _raw_count += 1
-                        if _raw_count <= 50 or _raw_count % 100 == 0:
-                            preview = raw[:200] if isinstance(raw, str) else repr(raw[:100])
-                            print(f"[arb_ws] RAW[{_raw_count}]: {preview}")
-                        try:
-                            _handle_message(orjson.loads(raw))
-                        except (orjson.JSONDecodeError, ValueError):
-                            pass  # ACK / ping frames from CLOB WS are not JSON
-                        except Exception as e:
-                            print(f"[arb_ws] error: {e}")
-                finally:
-                    sender.cancel()
-
+                async for raw in ws:
+                    if not raw:
+                        continue
+                    try:
+                        _handle_message(orjson.loads(raw))
+                    except (orjson.JSONDecodeError, ValueError):
+                        pass
+                    except Exception as e:
+                        print(f"[arb_ws] status error: {e}")
         except Exception as e:
-            print(f"[arb_ws] Connection lost: {e}. Retrying in {retry_delay}s…")
+            print(f"[arb_ws] status WS lost: {e}. Retrying in {retry_delay}s…")
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
+
+
+async def _run_orderbook_ws() -> None:
+    """
+    WS connection #2: subscribes to orderbook updates.
+    Waits for tokens to be queued, then opens a NEW connection per batch
+    (Polymarket only allows one subscription message per connection).
+    On reconnect, re-subscribes all known tokens in one message.
+    """
+    retry_delay = 5
+
+    # Collect all tokens queued so far before connecting
+    while True:
+        # Wait until we have at least one token to subscribe to
+        token_id = await _subscription_queue.get()
+        batch = [token_id]
+        # Drain everything already in the queue
+        while True:
+            try:
+                batch.append(_subscription_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        # Also wait a short moment for any stragglers (market_cache bulk adds)
+        await asyncio.sleep(0.5)
+        while True:
+            try:
+                batch.append(_subscription_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+        # Remember all subscribed tokens for reconnect
+        for tid in batch:
+            _subscribed_tokens.add(tid)
+
+        print(f"[arb_ws] 📖 orderbook WS — subscribing {len(_subscribed_tokens)} tokens…")
+
+        # Open a fresh connection with all tokens in the FIRST (and only) message
+        try:
+            async with websockets.connect(
+                CLOB_WS, ping_interval=20, ping_timeout=10, open_timeout=15,
+            ) as ws:
+                retry_delay = 5
+                await ws.send(orjson.dumps({
+                    "type": "market",
+                    "assets_ids": list(_subscribed_tokens),
+                    "custom_feature_enabled": True,
+                }).decode())
+                print(f"[arb_ws] 📖 orderbook WS connected | {len(_subscribed_tokens)} tokens")
+                _raw_count = 0
+                async for raw in ws:
+                    if not raw:
+                        continue
+                    _raw_count += 1
+                    if _raw_count <= 10 or _raw_count % 500 == 0:
+                        preview = raw[:200] if isinstance(raw, str) else repr(raw[:100])
+                        print(f"[arb_ws] BOOK RAW[{_raw_count}]: {preview}")
+                    try:
+                        _handle_message(orjson.loads(raw))
+                    except (orjson.JSONDecodeError, ValueError):
+                        pass
+                    except Exception as e:
+                        print(f"[arb_ws] book error: {e}")
+        except Exception as e:
+            print(f"[arb_ws] orderbook WS lost: {e}. Retrying in {retry_delay}s…")
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+            # Re-queue all tokens so the outer loop reconnects with full list
+            for tid in _subscribed_tokens:
+                _subscription_queue.put_nowait(tid)
+
+
+# Tracks all token_ids ever subscribed — used to re-subscribe on reconnect
+_subscribed_tokens: set[str] = set()
+
+
+async def run_clob_ws() -> None:
+    """
+    Run both WS connections concurrently:
+    - Market status WS (closures)
+    - Orderbook WS (book updates for sandwich/mispricing detection)
+    """
+    await asyncio.gather(
+        _run_market_status_ws(),
+        _run_orderbook_ws(),
+    )
