@@ -12,6 +12,7 @@ so the book is already in RAM when the resolution fires.
 """
 
 import asyncio
+import json
 
 import aiohttp
 
@@ -65,14 +66,26 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
                 continue
 
             tokens = m.get("tokens") or []
+            # Gamma API stores token IDs in clobTokenIds (JSON string or list)
+            clob_ids = m.get("clobTokenIds") or []
+            if isinstance(clob_ids, str):
+                try:
+                    clob_ids = json.loads(clob_ids)
+                except Exception:
+                    clob_ids = []
+
             _cache[cid] = {
                 "tokens":   [{"token_id": t.get("token_id") or t.get("tokenId", ""), "outcome": t.get("outcome", "")} for t in tokens],
                 "question": m.get("question", cid[:20]),
             }
             count += 1
 
-            for t in tokens:
-                tid = t.get("token_id") or t.get("tokenId", "")
+            # Collect token IDs from either source
+            token_ids: list[str] = [t.get("token_id") or t.get("tokenId", "") for t in tokens]
+            if not any(token_ids):
+                token_ids = [str(t) for t in clob_ids if t]
+
+            for tid in token_ids:
                 if tid and tid not in _subscribed:
                     new_tids.append(tid)
                     _subscribed.add(tid)

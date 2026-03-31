@@ -249,40 +249,48 @@ def _store_book(token_id: str, asks: list, bids: list) -> None:
     _run_detection(token_id, asks, bids)
 
 
-def _apply_changes(token_id: str, changes: list[dict]) -> None:
-    """Apply incremental price_changes delta to the cached book, then re-detect."""
+def _apply_side_update(token_id: str, side: str, updates: list[dict]) -> None:
+    """
+    Apply incremental updates to one side of the cached book.
+    The WS sends partial messages like {asset_id, bids: [{price, size}]}
+    where each entry is a level to add/update (size>0) or remove (size=0).
+    """
     book = _books.get(token_id)
     if book is None:
-        return  # No snapshot yet — delta cannot be applied
+        return  # No snapshot yet — store first, then apply deltas
 
-    bid_map = {e["price"]: e for e in book["bids"]}
-    ask_map = {e["price"]: e for e in book["asks"]}
+    level_map = {e["price"]: e for e in book[side]}
+    for entry in updates:
+        price = entry.get("price", "")
+        if not price:
+            continue
+        if float(entry.get("size", 0)) == 0:
+            level_map.pop(price, None)
+        else:
+            level_map[price] = entry
 
-    for ch in changes:
-        price = ch.get("price", "")
-        size  = str(ch.get("size", "0"))
-        side  = (ch.get("side") or "").upper()
+    global _book_update_count
+    _book_update_count += 1
+    if _book_update_count % _BOOK_LOG_INTERVAL == 0:
+        print(f"[arb_ws] 📊 {_book_update_count} book updates | {len(_books)} books in memory")
 
-        if side == "BUY":
-            if float(size) == 0:
-                bid_map.pop(price, None)
-            else:
-                bid_map[price] = {"price": price, "size": size}
-        elif side == "SELL":
-            if float(size) == 0:
-                ask_map.pop(price, None)
-            else:
-                ask_map[price] = {"price": price, "size": size}
-
-    new_bids = sorted(bid_map.values(), key=lambda x: float(x["price"]), reverse=True)
-    new_asks = sorted(ask_map.values(), key=lambda x: float(x["price"]))
-
-    _books[token_id] = {"bids": new_bids, "asks": new_asks}
-    _stale[token_id] = sorted(
-        [a for a in new_asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE],
-        key=lambda a: float(a["price"]),
-    )
-    _run_detection(token_id, new_asks, new_bids)
+    if side == "bids":
+        updated = sorted(level_map.values(), key=lambda x: float(x["price"]), reverse=True)
+        _books[token_id]["bids"] = updated
+        # Bid watcher
+        if token_id in _bid_watchers:
+            min_bid, event = _bid_watchers[token_id]
+            if not event.is_set() and updated and float(updated[0]["price"]) >= min_bid:
+                event.set()
+        _run_detection(token_id, book["asks"], updated)
+    else:
+        updated = sorted(level_map.values(), key=lambda x: float(x["price"]))
+        _books[token_id]["asks"] = updated
+        _stale[token_id] = sorted(
+            [a for a in updated if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE],
+            key=lambda a: float(a["price"]),
+        )
+        _run_detection(token_id, updated, book["bids"])
 
 
 def _handle_message(msg: dict | list) -> None:
@@ -315,24 +323,23 @@ def _handle_message(msg: dict | list) -> None:
 
     asset_id = msg.get("asset_id")
 
-    # --- Full book snapshot: {asset_id, bids: [...], asks: [...]} ---
-    if asset_id and "bids" in msg and "asks" in msg:
-        _store_book(asset_id, msg["asks"], msg["bids"])
+    # --- Book update: full snapshot OR partial side update ---
+    if asset_id and ("bids" in msg or "asks" in msg):
+        has_bids = "bids" in msg
+        has_asks = "asks" in msg
+        if has_bids and has_asks:
+            # Full snapshot: replace both sides entirely
+            _store_book(asset_id, msg["asks"], msg["bids"])
+        elif has_bids:
+            _apply_side_update(asset_id, "bids", msg["bids"])
+        else:
+            _apply_side_update(asset_id, "asks", msg["asks"])
         return
 
-    # --- Incremental delta: {price_changes: [{asset_id, price, side, size}, ...]} ---
-    price_changes = msg.get("price_changes")
-    if price_changes:
-        by_asset: dict[str, list] = {}
-        for ch in price_changes:
-            aid = ch.get("asset_id")
-            if aid:
-                by_asset.setdefault(aid, []).append(ch)
-        for aid, changes in by_asset.items():
-            _apply_changes(aid, changes)
-        return
+    # --- price_changes: contains asset_id + price only (no side/size) — skip delta,
+    #     rely on the full book message that follows in the same burst ---
 
-    # --- Best bid/ask tick: {asset_id, best_bid, best_ask} — re-detect from cached book ---
+    # --- Best bid/ask tick: re-detect from cached book ---
     if asset_id and ("best_bid" in msg or "best_ask" in msg):
         book = _books.get(asset_id)
         if book:
