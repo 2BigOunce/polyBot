@@ -427,6 +427,7 @@ async def _run_orderbook_ws() -> None:
                 }).decode())
                 print(f"[arb_ws] 📖 orderbook WS connected | {len(_subscribed_tokens)} tokens")
                 _raw_count = 0
+                _last_queue_check = time.monotonic()
                 async for raw in ws:
                     if not raw:
                         continue
@@ -440,6 +441,13 @@ async def _run_orderbook_ws() -> None:
                         pass
                     except Exception as e:
                         print(f"[arb_ws] book error: {e}")
+                    # Check every 30s if market_cache added new tokens — reconnect if so
+                    now = time.monotonic()
+                    if now - _last_queue_check >= 30 and not _subscription_queue.empty():
+                        _last_queue_check = now
+                        pending = _subscription_queue.qsize()
+                        print(f"[arb_ws] 🔄 {pending} new tokens queued — reconnecting to include them")
+                        break  # Exit inner loop → outer loop reconnects with full list
         except Exception as e:
             print(f"[arb_ws] orderbook WS lost: {e}. Retrying in {retry_delay}s…")
             await asyncio.sleep(retry_delay)
