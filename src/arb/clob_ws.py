@@ -56,8 +56,8 @@ _SANDWICH_COOLDOWN_S = 60.0
 _SPREAD_OBS_FILE = "logs/spread_observations.csv"
 _spread_obs_cooldown: dict[str, float] = {}
 _SPREAD_OBS_COOLDOWN_S = 10.0   # log same token at most every 10s
-_SPREAD_OBS_MIN_ASK   = 0.35    # wider than sandwich threshold — captures near-misses
-_SPREAD_OBS_MIN_BID   = 0.65
+_SPREAD_OBS_MIN_ASK   = 0.20    # same as sandwich threshold — log confirmed opportunities
+_SPREAD_OBS_MIN_BID   = 0.85
 
 def _log_spread(token_id: str, ask_price: float, bid_price: float, ask_size: float) -> None:
     """Append a spread observation to the CSV log file."""
