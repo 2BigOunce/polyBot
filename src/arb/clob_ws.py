@@ -238,11 +238,10 @@ def _store_book(token_id: str, asks: list, bids: list) -> None:
         crossed   = sum(1 for b in _books.values() if b["bids"] and b["asks"] and float(b["bids"][0]["price"]) >= 0.80 and float(min(b["asks"], key=lambda a: float(a["price"]))["price"]) <= 0.20)
         print(f"[arb_ws] 📊 {_book_update_count} book updates | {len(_books)} books | bid≥0.70: {high_bids} | ask≤0.30: {low_asks} | crossed(0.80/0.20): {crossed}")
 
-    _books[token_id] = {"asks": asks, "bids": bids}
-    _stale[token_id] = sorted(
-        [a for a in asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE],
-        key=lambda a: float(a["price"]),
-    )
+    sorted_bids = sorted(bids, key=lambda b: float(b["price"]), reverse=True)
+    sorted_asks = sorted(asks, key=lambda a: float(a["price"]))
+    _books[token_id] = {"asks": sorted_asks, "bids": sorted_bids}
+    _stale[token_id] = [a for a in sorted_asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE]
 
     # Bid watcher
     if token_id in _bid_watchers:
