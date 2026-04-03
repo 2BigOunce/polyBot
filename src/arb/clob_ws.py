@@ -232,7 +232,11 @@ def _store_book(token_id: str, asks: list, bids: list) -> None:
     global _book_update_count
     _book_update_count += 1
     if _book_update_count % _BOOK_LOG_INTERVAL == 0:
-        print(f"[arb_ws] 📊 {_book_update_count} book updates | {len(_books)} books in memory")
+        # Show distribution: how many books have high bids / low asks
+        high_bids = sum(1 for b in _books.values() if b["bids"] and float(b["bids"][0]["price"]) >= 0.70)
+        low_asks  = sum(1 for b in _books.values() if b["asks"] and float(min(b["asks"], key=lambda a: float(a["price"]))["price"]) <= 0.30)
+        crossed   = sum(1 for b in _books.values() if b["bids"] and b["asks"] and float(b["bids"][0]["price"]) >= 0.80 and float(min(b["asks"], key=lambda a: float(a["price"]))["price"]) <= 0.20)
+        print(f"[arb_ws] 📊 {_book_update_count} book updates | {len(_books)} books | bid≥0.70: {high_bids} | ask≤0.30: {low_asks} | crossed(0.80/0.20): {crossed}")
 
     _books[token_id] = {"asks": asks, "bids": bids}
     _stale[token_id] = sorted(
