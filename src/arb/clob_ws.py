@@ -383,81 +383,92 @@ async def _run_market_status_ws() -> None:
             retry_delay = min(retry_delay * 2, 60)
 
 
-async def _run_orderbook_ws() -> None:
-    """
-    WS connection #2: subscribes to orderbook updates.
-    Waits for tokens to be queued, then opens a NEW connection per batch
-    (Polymarket only allows one subscription message per connection).
-    On reconnect, re-subscribes all known tokens in one message.
-    """
+_WS_CHUNK_SIZE = 5_000  # max tokens per WS connection (server rejects larger messages)
+
+
+async def _run_orderbook_ws_chunk(chunk: list[str], chunk_id: int) -> None:
+    """Run a single orderbook WS connection for a chunk of token_ids."""
     retry_delay = 5
-
-    # Collect all tokens queued so far before connecting
     while True:
-        # Wait until we have at least one token to subscribe to
-        token_id = await _subscription_queue.get()
-        batch = [token_id]
-        # Drain everything already in the queue
-        while True:
-            try:
-                batch.append(_subscription_queue.get_nowait())
-            except asyncio.QueueEmpty:
-                break
-        # Also wait a short moment for any stragglers (market_cache bulk adds)
-        await asyncio.sleep(0.5)
-        while True:
-            try:
-                batch.append(_subscription_queue.get_nowait())
-            except asyncio.QueueEmpty:
-                break
-
-        # Remember all subscribed tokens for reconnect
-        for tid in batch:
-            _subscribed_tokens.add(tid)
-
-        print(f"[arb_ws] 📖 orderbook WS — subscribing {len(_subscribed_tokens)} tokens…")
-
-        # Open a fresh connection with all tokens in the FIRST (and only) message
         try:
             async with websockets.connect(
                 CLOB_WS, ping_interval=20, ping_timeout=10, open_timeout=15,
+                max_size=10 * 1024 * 1024,  # 10MB receive limit
             ) as ws:
                 retry_delay = 5
                 await ws.send(orjson.dumps({
                     "type": "market",
-                    "assets_ids": list(_subscribed_tokens),
+                    "assets_ids": chunk,
                     "custom_feature_enabled": True,
                 }).decode())
-                print(f"[arb_ws] 📖 orderbook WS connected | {len(_subscribed_tokens)} tokens")
-                _raw_count = 0
-                _last_queue_check = time.monotonic()
+                print(f"[arb_ws] 📖 WS shard {chunk_id} connected | {len(chunk)} tokens")
                 async for raw in ws:
                     if not raw:
                         continue
-                    _raw_count += 1
-                    if _raw_count <= 100 or _raw_count % 500 == 0:
-                        preview = raw[:200] if isinstance(raw, str) else repr(raw[:100])
-                        print(f"[arb_ws] BOOK RAW[{_raw_count}]: {preview}")
                     try:
                         _handle_message(orjson.loads(raw))
                     except (orjson.JSONDecodeError, ValueError):
                         pass
                     except Exception as e:
-                        print(f"[arb_ws] book error: {e}")
-                    # Check every 30s if market_cache added new tokens — reconnect if so
-                    now = time.monotonic()
-                    if now - _last_queue_check >= 30 and not _subscription_queue.empty():
-                        _last_queue_check = now
-                        pending = _subscription_queue.qsize()
-                        print(f"[arb_ws] 🔄 {pending} new tokens queued — reconnecting to include them")
-                        break  # Exit inner loop → outer loop reconnects with full list
+                        print(f"[arb_ws] shard {chunk_id} error: {e}")
         except Exception as e:
-            print(f"[arb_ws] orderbook WS lost: {e}. Retrying in {retry_delay}s…")
+            print(f"[arb_ws] shard {chunk_id} lost: {e}. Retrying in {retry_delay}s…")
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
-            # Re-queue all tokens so the outer loop reconnects with full list
-            for tid in _subscribed_tokens:
-                _subscription_queue.put_nowait(tid)
+
+
+async def _run_orderbook_ws() -> None:
+    """
+    WS connection #2: subscribes to orderbook updates.
+    Collects all queued tokens, splits them into chunks of _WS_CHUNK_SIZE,
+    and runs one WS connection per chunk in parallel.
+    Reconnects all shards when new tokens are queued (every 30s check).
+    """
+    _shard_tasks: list[asyncio.Task] = []
+
+    async def _restart_shards() -> None:
+        nonlocal _shard_tasks
+        # Cancel existing shards
+        for t in _shard_tasks:
+            t.cancel()
+        _shard_tasks = []
+        tokens = list(_subscribed_tokens)
+        chunks = [tokens[i:i + _WS_CHUNK_SIZE] for i in range(0, len(tokens), _WS_CHUNK_SIZE)]
+        print(f"[arb_ws] 📖 {len(tokens)} tokens → {len(chunks)} WS shards")
+        for i, chunk in enumerate(chunks):
+            _shard_tasks.append(asyncio.create_task(_run_orderbook_ws_chunk(chunk, i)))
+
+    while True:
+        # Wait for at least one token
+        token_id = await _subscription_queue.get()
+        _subscribed_tokens.add(token_id)
+        # Drain queue + short wait for bulk adds
+        while True:
+            try:
+                _subscribed_tokens.add(_subscription_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        await asyncio.sleep(0.5)
+        while True:
+            try:
+                _subscribed_tokens.add(_subscription_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+        await _restart_shards()
+
+        # Wait 30s then check if new tokens arrived — if so, restart all shards
+        while True:
+            await asyncio.sleep(30)
+            if not _subscription_queue.empty():
+                while True:
+                    try:
+                        _subscribed_tokens.add(_subscription_queue.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+                pending = len(_subscribed_tokens)
+                print(f"[arb_ws] 🔄 new tokens queued — restarting shards ({pending} total)")
+                await _restart_shards()
 
 
 # Tracks all token_ids ever subscribed — used to re-subscribe on reconnect
