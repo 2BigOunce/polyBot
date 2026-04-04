@@ -10,8 +10,6 @@ Two responsibilities:
 """
 
 import asyncio
-import csv
-import os
 import time
 
 import orjson
@@ -21,9 +19,9 @@ from config.settings import (
     ARB_MAX_STALE_PRICE,
     CLOB_MISPRICING_BID_RATIO,
     CLOB_MISPRICING_MIN_SPREAD,
-    MAKER_SANDWICH_MAX_ASK,
-    MAKER_SANDWICH_MIN_BID,
-    MAKER_SANDWICH_MIN_PROFIT,
+    # MAKER_SANDWICH_MAX_ASK,   # sandwich arb disabled — crossed books don't exist in practice
+    # MAKER_SANDWICH_MIN_BID,   # (desaru/notprivate confirmed: they do stale arb post-resolution)
+    # MAKER_SANDWICH_MIN_PROFIT,
 )
 
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -47,34 +45,28 @@ _mispricing_queue: asyncio.Queue[dict] = asyncio.Queue()
 _mispricing_cooldown: dict[tuple[str, str], float] = {}
 _MISPRICING_COOLDOWN_S = 30.0
 
-# Sandwich arb queue: ask << bid on same token → buy ask + sell bid immediately
-_sandwich_queue: asyncio.Queue[dict] = asyncio.Queue()
-_sandwich_cooldown: dict[str, float] = {}
-_SANDWICH_COOLDOWN_S = 60.0
-
-# Spread observation log — records all extreme spreads seen for calibration
-_SPREAD_OBS_FILE = "logs/spread_observations.csv"
-_spread_obs_cooldown: dict[str, float] = {}
-_SPREAD_OBS_COOLDOWN_S = 10.0   # log same token at most every 10s
-_SPREAD_OBS_MIN_ASK   = 0.20    # same as sandwich threshold — log confirmed opportunities
-_SPREAD_OBS_MIN_BID   = 0.85
-
-def _log_spread(token_id: str, ask_price: float, bid_price: float, ask_size: float) -> None:
-    """Append a spread observation to the CSV log file."""
-    os.makedirs("logs", exist_ok=True)
-    write_header = not os.path.exists(_SPREAD_OBS_FILE)
-    with open(_SPREAD_OBS_FILE, "a", newline="") as f:
-        w = csv.writer(f)
-        if write_header:
-            w.writerow(["timestamp", "token_id", "ask_price", "bid_price", "spread", "ask_size"])
-        w.writerow([
-            time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
-            token_id,
-            round(ask_price, 4),
-            round(bid_price, 4),
-            round(bid_price - ask_price, 4),
-            round(ask_size, 2),
-        ])
+# ---------------------------------------------------------------------------
+# SANDWICH ARB — disabled (2026-04-04)
+# Hypothesis was: detect crossed orderbook (ask << bid on same token) via WS,
+# buy the ask and immediately sell into the bid.
+# Reality: CLOB matching engine pairs these orders instantly — crossed books
+# never persist long enough to catch via WS polling.
+# Confirmed by on-chain analysis of desaru/notprivate: they do stale arb
+# HOURS after resolution, not real-time crossed-book arb.
+# Code kept for reference in case market structure changes.
+#
+# _sandwich_queue: asyncio.Queue[dict] = asyncio.Queue()
+# _sandwich_cooldown: dict[str, float] = {}
+# _SANDWICH_COOLDOWN_S = 60.0
+#
+# _SPREAD_OBS_FILE = "logs/spread_observations.csv"
+# _spread_obs_cooldown: dict[str, float] = {}
+# _SPREAD_OBS_COOLDOWN_S = 10.0
+# _SPREAD_OBS_MIN_ASK   = 0.20
+# _SPREAD_OBS_MIN_BID   = 0.85
+#
+# def _log_spread(token_id, ask_price, bid_price, ask_size): ...
+# ---------------------------------------------------------------------------
 
 # Bid watchers: token_id → (min_bid, asyncio.Event)
 # Registered by maker_positioning after a fill; fired when best_bid >= min_bid.
@@ -118,8 +110,8 @@ def get_mispricing_queue() -> asyncio.Queue:
     return _mispricing_queue
 
 
-def get_sandwich_queue() -> asyncio.Queue:
-    return _sandwich_queue
+# def get_sandwich_queue() -> asyncio.Queue:  # sandwich arb disabled
+#     return _sandwich_queue
 
 
 def get_closed_event(condition_id: str) -> asyncio.Event:
@@ -197,34 +189,11 @@ def _run_detection(token_id: str, asks: list, bids: list) -> None:
                 "best_bid":  best_bid,
             })
 
-    # Spread observation logging (wider thresholds — for calibration)
-    if ask_price <= _SPREAD_OBS_MIN_ASK and best_bid >= _SPREAD_OBS_MIN_BID:
-        now = time.monotonic()
-        if now - _spread_obs_cooldown.get(token_id, 0.0) >= _SPREAD_OBS_COOLDOWN_S:
-            _spread_obs_cooldown[token_id] = now
-            _log_spread(token_id, ask_price, best_bid, ask_size)
-            print(
-                f"[arb_ws] 👁 spread obs ask={ask_price:.3f} bid={best_bid:.3f} "
-                f"spread={best_bid-ask_price:.3f} | {token_id[:14]}…"
-            )
-
-    # Sandwich arb
-    if (
-        ask_price <= MAKER_SANDWICH_MAX_ASK
-        and best_bid  >= MAKER_SANDWICH_MIN_BID
-        and best_bid - ask_price >= MAKER_SANDWICH_MIN_PROFIT
-        and ask_size > 0
-    ):
-        now = time.monotonic()
-        if now - _sandwich_cooldown.get(token_id, 0.0) >= _SANDWICH_COOLDOWN_S:
-            _sandwich_cooldown[token_id] = now
-            _sandwich_queue.put_nowait({
-                "token_id":  token_id,
-                "ask_price": ask_price,
-                "ask_size":  ask_size,
-                "bid_price": best_bid,
-                "detected_at": time.monotonic(),
-            })
+    # --- SANDWICH ARB (disabled) -------------------------------------------
+    # if ask_price <= MAKER_SANDWICH_MAX_ASK and best_bid >= MAKER_SANDWICH_MIN_BID
+    #         and best_bid - ask_price >= MAKER_SANDWICH_MIN_PROFIT and ask_size > 0:
+    #     ...  # crossed books don't persist — see comment block above
+    # -----------------------------------------------------------------------
 
 
 def _store_book(token_id: str, asks: list, bids: list) -> None:
