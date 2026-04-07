@@ -13,6 +13,7 @@ so the book is already in RAM when the resolution fires.
 
 import asyncio
 import json
+from datetime import datetime, timezone
 
 import aiohttp
 
@@ -21,6 +22,11 @@ from src.arb.clob_ws import subscribe_orderbook_bulk
 GAMMA_API        = "https://gamma-api.polymarket.com"
 CLOB_API         = "https://clob.polymarket.com"
 REFRESH_INTERVAL = 1800  # 30 minutes
+
+# Only pre-subscribe to WS orderbooks for markets ending within this window.
+# Markets resolving further out don't need their book pre-cached in RAM —
+# we fetch via REST at resolution time (adds ~50ms, irrelevant vs stale arb timescale).
+_WS_SUBSCRIBE_DAYS = 14
 
 # condition_id → {"tokens": [{"token_id": ..., "outcome": ...}, ...], "question": ...}
 _cache: dict[str, dict] = {}
@@ -85,10 +91,22 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
             if not any(token_ids):
                 token_ids = [str(t) for t in clob_ids if t]
 
-            for tid in token_ids:
-                if tid and tid not in _subscribed:
-                    new_tids.append(tid)
-                    _subscribed.add(tid)
+            # Only subscribe to WS for markets resolving within _WS_SUBSCRIBE_DAYS
+            end_date_str = m.get("endDate") or m.get("end_date_iso") or ""
+            subscribe_to_ws = False
+            if end_date_str:
+                try:
+                    end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
+                    days_until = (end_dt - datetime.now(tz=timezone.utc)).days
+                    subscribe_to_ws = days_until <= _WS_SUBSCRIBE_DAYS
+                except Exception:
+                    pass  # unparseable date → skip WS subscription
+
+            if subscribe_to_ws:
+                for tid in token_ids:
+                    if tid and tid not in _subscribed:
+                        new_tids.append(tid)
+                        _subscribed.add(tid)
 
         if len(data) < 100:
             break
