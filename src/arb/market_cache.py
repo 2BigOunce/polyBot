@@ -26,7 +26,7 @@ REFRESH_INTERVAL = 1800  # 30 minutes
 # Only pre-subscribe to WS orderbooks for markets ending within this window.
 # Markets resolving further out don't need their book pre-cached in RAM —
 # we fetch via REST at resolution time (adds ~50ms, irrelevant vs stale arb timescale).
-_WS_SUBSCRIBE_DAYS = 14
+_WS_SUBSCRIBE_DAYS = 3
 
 # condition_id → {"tokens": [{"token_id": ..., "outcome": ...}, ...], "question": ...}
 _cache: dict[str, dict] = {}
