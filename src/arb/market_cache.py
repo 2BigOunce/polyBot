@@ -7,32 +7,23 @@ Used by arb_scanner to skip the market HTTP fetch at resolution time (~50ms save
 Cache hit  → token_id available instantly, no HTTP call needed.
 Cache miss → falls back to HTTP fetch (no worse than current behavior).
 
-Also pre-subscribes to orderbook WS for markets ending within 6 hours,
-so the book is already in RAM when the resolution fires.
+WS orderbook subscriptions are NOT done here — arb_scanner subscribes the
+winning token immediately at resolution time. Stale orders persist for hours,
+so the ~1s WS fill delay is irrelevant. Pre-subscribing 27k+ tokens was
+causing RAM saturation (628MB+ with swap thrashing).
 """
 
 import asyncio
 import json
-from datetime import datetime, timezone
 
 import aiohttp
-
-from src.arb.clob_ws import subscribe_orderbook_bulk
 
 GAMMA_API        = "https://gamma-api.polymarket.com"
 CLOB_API         = "https://clob.polymarket.com"
 REFRESH_INTERVAL = 1800  # 30 minutes
 
-# Only pre-subscribe to WS orderbooks for markets ending within this window.
-# Markets resolving further out don't need their book pre-cached in RAM —
-# we fetch via REST at resolution time (adds ~50ms, irrelevant vs stale arb timescale).
-_WS_SUBSCRIBE_DAYS = 3
-
 # condition_id → {"tokens": [{"token_id": ..., "outcome": ...}, ...], "question": ...}
 _cache: dict[str, dict] = {}
-
-# token_ids already subscribed — avoid re-queuing on every 30min refresh
-_subscribed: set[str] = set()
 
 
 def get_cached_market(condition_id: str) -> dict | None:
@@ -40,14 +31,13 @@ def get_cached_market(condition_id: str) -> dict | None:
     return _cache.get(condition_id)
 
 
-async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
+async def _refresh(session: aiohttp.ClientSession) -> int:
     """
-    Fetch active markets from Gamma API, populate cache, pre-subscribe to orderbooks.
-    Returns (cached_count, new_subscriptions).
+    Fetch active markets from Gamma API and populate metadata cache.
+    Returns cached_count.
     """
-    count    = 0
-    new_tids = []
-    offset   = 0
+    count  = 0
+    offset = 0
 
     while True:
         try:
@@ -80,49 +70,28 @@ async def _refresh(session: aiohttp.ClientSession) -> tuple[int, int]:
                 except Exception:
                     clob_ids = []
 
+            token_ids: list[str] = [t.get("token_id") or t.get("tokenId", "") for t in tokens]
+            if not any(token_ids):
+                token_ids = [str(t) for t in clob_ids if t]
+
             _cache[cid] = {
                 "tokens":   [{"token_id": t.get("token_id") or t.get("tokenId", ""), "outcome": t.get("outcome", "")} for t in tokens],
                 "question": m.get("question", cid[:20]),
             }
             count += 1
 
-            # Collect token IDs from either source
-            token_ids: list[str] = [t.get("token_id") or t.get("tokenId", "") for t in tokens]
-            if not any(token_ids):
-                token_ids = [str(t) for t in clob_ids if t]
-
-            # Only subscribe to WS for markets resolving within _WS_SUBSCRIBE_DAYS
-            end_date_str = m.get("endDate") or m.get("end_date_iso") or ""
-            subscribe_to_ws = False
-            if end_date_str:
-                try:
-                    end_dt = datetime.fromisoformat(end_date_str.replace("Z", "+00:00"))
-                    days_until = (end_dt - datetime.now(tz=timezone.utc)).days
-                    subscribe_to_ws = days_until <= _WS_SUBSCRIBE_DAYS
-                except Exception:
-                    pass  # unparseable date → skip WS subscription
-
-            if subscribe_to_ws:
-                for tid in token_ids:
-                    if tid and tid not in _subscribed:
-                        new_tids.append(tid)
-                        _subscribed.add(tid)
-
         if len(data) < 100:
             break
         offset += 100
         await asyncio.sleep(0.2)
 
-    if new_tids:
-        subscribe_orderbook_bulk(new_tids)
-
-    return count, len(new_tids)
+    return count
 
 
 async def run_market_cache() -> None:
     """Background task: refresh the market cache every 30 minutes."""
     async with aiohttp.ClientSession() as session:
         while True:
-            n, s = await _refresh(session)
-            print(f"[market_cache] cached {n} active markets | pre-subscribed {s} new token books")
+            n = await _refresh(session)
+            print(f"[market_cache] cached {n} active markets")
             await asyncio.sleep(REFRESH_INTERVAL)
