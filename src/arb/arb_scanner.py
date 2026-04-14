@@ -13,9 +13,9 @@ Slow path: fallback if fast path finds nothing (orders already cancelled).
   - Waits for closed=true, cross-checks CLOB winner flag, retries with fresh book.
 
 Sizing strategy:
-    price < 0.08  → 30% of capital (high profit multiple: x10+)
-    price < 0.30  → 15% of capital
-    price >= 0.30 → 10% of capital
+    Buy the full stale order (all available shares) up to ARB_CAPITAL remaining budget.
+    If the order is larger than the remaining budget, buy as many shares as the budget allows.
+    No fixed per-trade cap — size is determined by what's actually available in the book.
 """
 
 import asyncio
@@ -23,7 +23,7 @@ import asyncio
 import aiohttp
 from telegram import Bot
 
-from config.settings import ARB_CAPITAL, ARB_MAX_SINGLE_TRADE, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from config.settings import ARB_CAPITAL, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from src.arb.clob_ws import get_closed_event, get_cached_book, get_cached_stale, subscribe_orderbook
 from src.arb.market_cache import get_cached_market
 
@@ -53,19 +53,6 @@ def _get_session() -> aiohttp.ClientSession:
     return _session
 
 
-def _get_arb_size(stale_price: float) -> float:
-    """
-    Return max USDC to deploy at a given stale price level.
-    Lower price = larger profit multiple = bigger bet.
-    """
-    if stale_price < 0.08:
-        return min(ARB_CAPITAL * 0.30, ARB_MAX_SINGLE_TRADE)
-    elif stale_price < 0.30:
-        return min(ARB_CAPITAL * 0.15, ARB_MAX_SINGLE_TRADE)
-    else:
-        return min(ARB_CAPITAL * 0.10, ARB_MAX_SINGLE_TRADE)
-
-
 def _find_stale(book: dict) -> list[dict]:
     """Return stale asks sorted cheapest first (highest profit)."""
     asks = book.get("asks", [])
@@ -91,12 +78,12 @@ async def _sweep(
         price = float(ask["price"])
         shares_available = float(ask["size"])
         cost_usdc = shares_available * price
-        budget_for_level = min(_get_arb_size(price), remaining_budget)
 
-        if budget_for_level <= 0:
+        if remaining_budget <= 0:
             break
 
-        size_usdc = min(cost_usdc, budget_for_level)
+        # Buy the full order if capital allows, partial fill otherwise
+        size_usdc = min(cost_usdc, remaining_budget)
         shares_to_buy = size_usdc / price
 
         opportunities.append({

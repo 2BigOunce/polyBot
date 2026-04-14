@@ -80,8 +80,7 @@ INSIDER_PENDING_TRADES = int(os.getenv("INSIDER_PENDING_TRADES", "3"))  # alert 
 
 # --- Resolution arbitrage (Phase 6) ---
 ARB_MAX_STALE_PRICE  = float(os.getenv("ARB_MAX_STALE_PRICE", "0.90"))   # buy stale asks below this price
-ARB_CAPITAL          = float(os.getenv("ARB_CAPITAL", "2000"))            # USDC reserved for arb bot
-ARB_MAX_SINGLE_TRADE = float(os.getenv("ARB_MAX_SINGLE_TRADE", "50"))    # hard cap per arb execution (safety)
+ARB_CAPITAL          = float(os.getenv("ARB_CAPITAL", "2000"))            # USDC reserved for arb bot (total budget per resolution)
 
 # --- CLOB mispricing arbitrage ---
 # Buy asks priced well below the current best bid, resell immediately at bid.
