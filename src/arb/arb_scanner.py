@@ -180,6 +180,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     if cached:
         tokens = cached.get("tokens", [])
         if winner_index >= len(tokens):
+            print(f"[arb] cache: winner_index {winner_index} out of range (tokens={len(tokens)}) — {condition_id[:14]}…")
             return
         winning_token = tokens[winner_index]
         token_id      = winning_token.get("token_id")
@@ -208,7 +209,48 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
             return
 
         tokens = market.get("tokens", [])
+        if not tokens:
+            # CLOB returned empty tokens — fall back to Gamma API
+            try:
+                async with session.get(
+                    f"https://gamma-api.polymarket.com/markets",
+                    params={"clob_token_ids": condition_id},
+                ) as gresp:
+                    gdata = await gresp.json()
+                if gdata and isinstance(gdata, list):
+                    gtokens = gdata[0].get("clobTokenIds") or []
+                    outcomes = gdata[0].get("outcomes") or []
+                    question = gdata[0].get("question", condition_id[:20])
+                    if winner_index < len(gtokens):
+                        token_id = gtokens[winner_index]
+                        winner   = outcomes[winner_index] if winner_index < len(outcomes) else f"outcome_{winner_index}"
+                        print(f"[arb] 🔄 Gamma fallback — token_id found ({condition_id[:14]}…)")
+                        # Jump directly to subscribe + scan
+                        await subscribe_orderbook(token_id)
+                        closed_event = get_closed_event(condition_id)
+                        book = get_cached_book(token_id)
+                        if book is None:
+                            async with session.get(f"{CLOB_API}/book", params={"token_id": token_id}) as resp:
+                                data = await resp.json()
+                                book = data if resp.status == 200 and "asks" in data else None
+                        stale = get_cached_stale(token_id) or (book and _find_stale(book))
+                        if stale:
+                            await _sweep(stale, token_id, question, winner, condition_id, session)
+                        else:
+                            print(f"[arb] Gamma fallback: no stale asks | {condition_id[:14]}…")
+                        return
+                    else:
+                        print(f"[arb] Gamma fallback: winner_index {winner_index} out of range ({condition_id[:14]}…)")
+                        return
+                else:
+                    print(f"[arb] Gamma fallback: no data ({condition_id[:14]}…)")
+                    return
+            except Exception as e:
+                print(f"[arb] Gamma fallback failed ({condition_id[:14]}…): {e}")
+                return
+
         if winner_index >= len(tokens):
+            print(f"[arb] winner_index {winner_index} out of range (tokens={len(tokens)}) — {condition_id[:14]}…")
             return
 
         winning_token = tokens[winner_index]
@@ -217,6 +259,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
         question      = market.get("question", condition_id[:20])
 
     if not token_id:
+        print(f"[arb] no token_id for winner_index={winner_index} — {condition_id[:14]}…")
         return
 
     # Subscribe to orderbook WS immediately — book builds in RAM during CLOB delay
