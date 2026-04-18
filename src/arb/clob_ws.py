@@ -146,6 +146,21 @@ def subscribe_mispricing_bulk(token_ids: list[str]) -> None:
     print(f"[arb_ws] 📡 {len(new_tokens)} new tokens queued for lite mispricing tracking ({len(_lite_tokens)} total lite)")
 
 
+def cleanup_lite_tokens(active_token_ids: set[str]) -> None:
+    """
+    Remove lite-tracked tokens that are no longer in the active market set.
+    Called by market_cache after each refresh. Tokens in full tracking
+    (_subscribed_tokens) are kept regardless — they may be mid-arb.
+    """
+    stale = _lite_tokens - active_token_ids - _subscribed_tokens
+    if not stale:
+        return
+    for t in stale:
+        _lite_tokens.discard(t)
+        _price_signals.pop(t, None)
+    print(f"[arb_ws] 🧹 cleaned {len(stale)} stale lite tokens ({len(_lite_tokens)} remaining)")
+
+
 async def subscribe_orderbook(token_id: str) -> None:
     """
     Request a live orderbook subscription for a token_id.

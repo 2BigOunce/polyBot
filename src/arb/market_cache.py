@@ -18,7 +18,7 @@ import json
 
 import aiohttp
 
-from src.arb.clob_ws import subscribe_mispricing_bulk
+from src.arb.clob_ws import cleanup_lite_tokens, subscribe_mispricing_bulk
 
 GAMMA_API        = "https://gamma-api.polymarket.com"
 CLOB_API         = "https://clob.polymarket.com"
@@ -99,6 +99,7 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
         await asyncio.sleep(0.2)
 
     if all_token_ids:
+        cleanup_lite_tokens(set(all_token_ids))
         subscribe_mispricing_bulk(all_token_ids)
     return count
 
