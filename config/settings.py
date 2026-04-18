@@ -86,8 +86,8 @@ ARB_CAPITAL          = float(os.getenv("ARB_CAPITAL", "2000"))            # USDC
 # Buy asks priced well below the current best bid, resell immediately at bid.
 # Both conditions must hold: ratio AND absolute spread.
 CLOB_MISPRICING_ENABLED    = os.getenv("CLOB_MISPRICING_ENABLED", "false").lower() == "true"
-CLOB_MISPRICING_BID_RATIO  = float(os.getenv("CLOB_MISPRICING_BID_RATIO",  "0.80"))  # ask < best_bid * this
-CLOB_MISPRICING_MIN_SPREAD = float(os.getenv("CLOB_MISPRICING_MIN_SPREAD", "0.10"))  # ask < best_bid - this
+CLOB_MISPRICING_BID_RATIO  = float(os.getenv("CLOB_MISPRICING_BID_RATIO",  "0.90"))  # ask < best_bid * this
+CLOB_MISPRICING_MIN_SPREAD = float(os.getenv("CLOB_MISPRICING_MIN_SPREAD", "0.05"))  # ask < best_bid - this
 CLOB_MISPRICING_MAX_TRADE  = float(os.getenv("CLOB_MISPRICING_MAX_TRADE",  "50"))    # hard cap per trade (USDC)
 
 # --- MAKER pre-positioning strategy ---
