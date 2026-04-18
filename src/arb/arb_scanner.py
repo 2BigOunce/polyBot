@@ -177,8 +177,8 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     cached = get_cached_market(condition_id)
 
     market = None
-    if cached:
-        tokens = cached.get("tokens", [])
+    if cached and cached.get("tokens"):
+        tokens = cached["tokens"]
         if winner_index >= len(tokens):
             print(f"[arb] cache: winner_index {winner_index} out of range (tokens={len(tokens)}) — {condition_id[:14]}…")
             return

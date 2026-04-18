@@ -77,8 +77,17 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
             if not any(token_ids):
                 token_ids = [str(t) for t in clob_ids if t]
 
+            if tokens:
+                cached_tokens = [{"token_id": t.get("token_id") or t.get("tokenId", ""), "outcome": t.get("outcome", "")} for t in tokens]
+            else:
+                # tokens field empty — reconstruct from clobTokenIds (no outcome names)
+                outcomes = m.get("outcomes") or []
+                cached_tokens = [
+                    {"token_id": str(tid), "outcome": outcomes[i] if i < len(outcomes) else f"outcome_{i}"}
+                    for i, tid in enumerate(clob_ids) if tid
+                ]
             _cache[cid] = {
-                "tokens":   [{"token_id": t.get("token_id") or t.get("tokenId", ""), "outcome": t.get("outcome", "")} for t in tokens],
+                "tokens":   cached_tokens,
                 "question": m.get("question", cid[:20]),
             }
             all_token_ids.extend(t for t in token_ids if t)
