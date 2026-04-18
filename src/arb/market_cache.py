@@ -18,9 +18,11 @@ import json
 
 import aiohttp
 
+from src.arb.clob_ws import subscribe_mispricing_bulk
+
 GAMMA_API        = "https://gamma-api.polymarket.com"
 CLOB_API         = "https://clob.polymarket.com"
-REFRESH_INTERVAL = 1800  # 30 minutes
+REFRESH_INTERVAL = 600  # 10 minutes
 
 # condition_id → {"tokens": [{"token_id": ..., "outcome": ...}, ...], "question": ...}
 _cache: dict[str, dict] = {}
@@ -38,6 +40,7 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
     """
     count  = 0
     offset = 0
+    all_token_ids: list[str] = []
 
     while True:
         try:
@@ -78,6 +81,7 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
                 "tokens":   [{"token_id": t.get("token_id") or t.get("tokenId", ""), "outcome": t.get("outcome", "")} for t in tokens],
                 "question": m.get("question", cid[:20]),
             }
+            all_token_ids.extend(t for t in token_ids if t)
             count += 1
 
         if len(data) < 100:
@@ -85,6 +89,8 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
         offset += 100
         await asyncio.sleep(0.2)
 
+    if all_token_ids:
+        subscribe_mispricing_bulk(all_token_ids)
     return count
 
 

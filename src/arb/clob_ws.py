@@ -45,6 +45,12 @@ _mispricing_queue: asyncio.Queue[dict] = asyncio.Queue()
 _mispricing_cooldown: dict[tuple[str, str], float] = {}
 _MISPRICING_COOLDOWN_S = 30.0
 
+# Lightweight tracking for open-market mispricing (all active markets from market_cache).
+# Stores only best_bid + top-5 asks instead of full orderbook — ~15MB for 30k tokens vs 600MB+.
+# token_id → {"best_bid": float, "asks": [{"price": str, "size": str}, ...]}
+_price_signals: dict[str, dict] = {}
+_lite_tokens: set[str] = set()  # tokens using lite tracking (not full book)
+
 # ---------------------------------------------------------------------------
 # SANDWICH ARB — disabled (2026-04-04)
 # Hypothesis was: detect crossed orderbook (ask << bid on same token) via WS,
@@ -125,13 +131,30 @@ def get_closed_event(condition_id: str) -> asyncio.Event:
     return _closed_events[condition_id]
 
 
+def subscribe_mispricing_bulk(token_ids: list[str]) -> None:
+    """
+    Register token_ids for lightweight mispricing monitoring.
+    Only stores best_bid + top-5 asks per token (not full orderbook).
+    Called by market_cache on each refresh to cover all active markets.
+    """
+    new_tokens = [t for t in token_ids if t and t not in _lite_tokens and t not in _subscribed_tokens]
+    if not new_tokens:
+        return
+    for t in new_tokens:
+        _lite_tokens.add(t)
+        _subscription_queue.put_nowait(t)
+    print(f"[arb_ws] 📡 {len(new_tokens)} new tokens queued for lite mispricing tracking ({len(_lite_tokens)} total lite)")
+
+
 async def subscribe_orderbook(token_id: str) -> None:
     """
     Request a live orderbook subscription for a token_id.
     The subscription is sent to the WS as soon as the sender task picks it up.
     Call this immediately after detecting an on-chain resolution to use the
     CLOB processing delay (~1-5s) to pre-fill the in-memory book.
+    Promotes a lite-tracked token to full book tracking.
     """
+    _lite_tokens.discard(token_id)  # promote to full tracking if was lite
     _subscription_queue.put_nowait(token_id)
 
 
@@ -198,6 +221,14 @@ def _run_detection(token_id: str, asks: list, bids: list) -> None:
 
 def _store_book(token_id: str, asks: list, bids: list) -> None:
     """Replace cached book, recompute stale asks, trigger detection."""
+    if token_id in _lite_tokens:
+        best_bid = max((float(b["price"]) for b in bids), default=0.0)
+        sorted_asks = sorted(asks, key=lambda a: float(a["price"]))[:5]
+        _price_signals[token_id] = {"best_bid": best_bid, "asks": sorted_asks}
+        if sorted_asks and best_bid > 0.05:
+            _run_detection(token_id, sorted_asks, [{"price": str(best_bid), "size": "1"}])
+        return
+
     global _book_update_count
     _book_update_count += 1
     if _book_update_count % _BOOK_LOG_INTERVAL == 0:
@@ -227,6 +258,33 @@ def _apply_side_update(token_id: str, side: str, updates: list[dict]) -> None:
     The WS sends partial messages like {asset_id, bids: [{price, size}]}
     where each entry is a level to add/update (size>0) or remove (size=0).
     """
+    if token_id in _lite_tokens:
+        signal = _price_signals.get(token_id)
+        if signal is None:
+            return  # No snapshot yet
+        if side == "bids":
+            for entry in updates:
+                if float(entry.get("size", 0)) > 0:
+                    new_bid = float(entry["price"])
+                    if new_bid > signal["best_bid"]:
+                        signal["best_bid"] = new_bid
+                # Removed bid: ignore (stale best_bid acceptable for detection)
+        else:
+            ask_map = {a["price"]: a for a in signal["asks"]}
+            for entry in updates:
+                price = entry.get("price", "")
+                if not price:
+                    continue
+                if float(entry.get("size", 0)) == 0:
+                    ask_map.pop(price, None)
+                else:
+                    ask_map[price] = entry
+            signal["asks"] = sorted(ask_map.values(), key=lambda a: float(a["price"]))[:5]
+        asks = signal["asks"]
+        if asks and signal["best_bid"] > 0.05:
+            _run_detection(token_id, asks, [{"price": str(signal["best_bid"]), "size": "1"}])
+        return
+
     book = _books.get(token_id)
     if book is None:
         return  # No snapshot yet — store first, then apply deltas
