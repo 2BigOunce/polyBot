@@ -199,6 +199,19 @@ def get_cached_stale(token_id: str) -> list[dict] | None:
     return _stale.get(token_id)
 
 
+def get_lite_stale(token_id: str, max_price: float) -> list[dict] | None:
+    """
+    Return stale asks from lite cache (_price_signals) if available.
+    Used at resolution time to attempt a BUY without any HTTP call or new WS subscription.
+    Returns None if token is not lite-tracked or has no data yet.
+    """
+    sig = _price_signals.get(token_id)
+    if not sig:
+        return None
+    stale = [a for a in sig.get("asks", []) if float(a["price"]) <= max_price]
+    return sorted(stale, key=lambda a: float(a["price"])) or None
+
+
 def _run_detection(token_id: str, asks: list, bids: list) -> None:
     """Run sandwich / mispricing / spread detection on a fresh book state."""
     if not bids or not asks:

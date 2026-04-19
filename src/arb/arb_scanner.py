@@ -24,7 +24,7 @@ import aiohttp
 from telegram import Bot
 
 from config.settings import ARB_CAPITAL, ARB_MAX_STALE_PRICE, REAL_TRADING_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-from src.arb.clob_ws import get_closed_event, get_cached_book, get_cached_stale, subscribe_orderbook
+from src.arb.clob_ws import get_closed_event, get_cached_book, get_cached_stale, get_lite_stale, subscribe_orderbook
 from src.arb.market_cache import get_cached_market
 
 _bot: Bot | None = None
@@ -116,7 +116,9 @@ async def _sweep(
             f"Winner: {winner}\n"
             f"Best price: {best_price:.3f} (x{multiple})\n"
             f"Cost: {total_cost:.0f} USDC → Profit ≈ {total_profit:.0f} USDC\n"
-            f"({len(opportunities)} price level(s))"
+            f"({len(opportunities)} price level(s))\n"
+            f"Token: {token_id[:24]}…\n"
+            f"Condition: {condition_id[:24]}…"
         )
         await _get_bot().send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
         return
@@ -260,6 +262,15 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
 
     if not token_id:
         print(f"[arb] no token_id for winner_index={winner_index} — {condition_id[:14]}…")
+        return
+
+    # ── Lite cache fast path — attempt BUY immediately, zero HTTP/WS delay ────
+    # Token was already lite-subscribed by market_cache → _price_signals has fresh asks.
+    # Place the buy before MMs can cancel. CLOB will reject if already cancelled (safe).
+    lite_stale = get_lite_stale(token_id, ARB_MAX_STALE_PRICE)
+    if lite_stale:
+        print(f"[arb] ⚡⚡ LITE CACHE — {len(lite_stale)} stale ask(s) | {condition_id[:14]}…")
+        await _sweep(lite_stale, token_id, question, winner, condition_id, session)
         return
 
     # Subscribe to orderbook WS immediately — book builds in RAM during CLOB delay
