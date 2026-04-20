@@ -229,10 +229,9 @@ def _run_detection(token_id: str, asks: list, bids: list) -> None:
         and ask_price < best_bid * CLOB_MISPRICING_BID_RATIO
         and ask_price < best_bid - CLOB_MISPRICING_MIN_SPREAD
     ):
-        key = (token_id, f"{ask_price:.4f}")
         now = time.monotonic()
-        if now - _mispricing_cooldown.get(key, 0.0) >= _MISPRICING_COOLDOWN_S:
-            _mispricing_cooldown[key] = now
+        if now - _mispricing_cooldown.get(token_id, 0.0) >= _MISPRICING_COOLDOWN_S:
+            _mispricing_cooldown[token_id] = now
             _mispricing_queue.put_nowait({
                 "token_id":  token_id,
                 "ask_price": ask_price,
