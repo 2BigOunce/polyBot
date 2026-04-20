@@ -37,6 +37,8 @@ def _closes_soon(market: dict) -> bool:
             dt = datetime.fromtimestamp(float(end), tz=timezone.utc)
         else:
             dt = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         return dt <= datetime.now(tz=timezone.utc) + timedelta(days=LITE_TRACK_DAYS)
     except Exception:
         return False
