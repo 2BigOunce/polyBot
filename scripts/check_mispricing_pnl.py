@@ -1,13 +1,18 @@
 """
-Check current P&L for positions bought during the 2026-04-20 16:25-16:26
-mispricing event. Queries data-api for current wallet positions and the
-CLOB orderbook to compute hypothetical P&L if sold at best_bid now.
+Check current P&L for actual on-chain trades executed during the
+2026-04-20 16:25-16:26 mispricing event.
 
-Usage: python scripts/check_mispricing_pnl.py
+Uses data-api /trades to get ground truth (ignores log-parsed data).
+For each unique token_id we traded, fetches current CLOB orderbook
+and computes hypothetical P&L if sold at best_bid now.
+
+Usage:
+    PYTHONPATH=. python3 scripts/check_mispricing_pnl.py
 """
 
 import asyncio
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import aiohttp
 
@@ -16,32 +21,36 @@ from config.settings import REAL_PROXY_WALLET
 CLOB_API = "https://clob.polymarket.com"
 DATA_API = "https://data-api.polymarket.com"
 
-# Cost basis from logs (Apr 20 16:25-16:26) — only BUYs with status="matched"
-# Format: (token_prefix_14, cost_usdc, shares, buy_price)
-TRADES = [
-    ("78432530460990", 28.57,   39.68, 0.720),
-    ("80888050988600",  9.00,   30.00, 0.300),
-    ("31087225693172", 10.53,  339.83, 0.031),
-    ("81634541236325", 21.77, 1088.32, 0.020),
-    ("96129480874598",  7.35,  919.04, 0.008),
-    ("31087225693172", 10.00,  200.00, 0.050),
-    ("11259921361243", 30.94,   43.58, 0.710),
-    ("11259921361243", 35.31,   49.04, 0.720),
-    ("11259921361243", 33.38,   45.73, 0.730),
-    ("11259921361243", 50.00,   67.57, 0.740),
-]
+# Time window (UTC) for the mispricing cascade
+START_TS = int(datetime(2026, 4, 20, 16, 25, 0, tzinfo=timezone.utc).timestamp())
+END_TS   = int(datetime(2026, 4, 20, 16, 30, 0, tzinfo=timezone.utc).timestamp())
 
 
-async def get_positions(session: aiohttp.ClientSession, wallet: str) -> list:
-    async with session.get(
-        f"{DATA_API}/positions",
-        params={"user": wallet, "limit": "500"},
-        timeout=aiohttp.ClientTimeout(total=15),
-    ) as resp:
-        if resp.status != 200:
-            print(f"positions HTTP {resp.status}: {await resp.text()}")
-            return []
-        return await resp.json()
+async def fetch_trades(session: aiohttp.ClientSession, wallet: str) -> list:
+    """Fetch all trades for the wallet, filter to target window."""
+    all_trades: list = []
+    offset = 0
+    while True:
+        async with session.get(
+            f"{DATA_API}/trades",
+            params={"user": wallet, "limit": "500", "offset": str(offset)},
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as resp:
+            if resp.status != 200:
+                print(f"/trades HTTP {resp.status}: {await resp.text()}")
+                return all_trades
+            batch = await resp.json()
+        if not batch:
+            break
+        all_trades.extend(batch)
+        if len(batch) < 500:
+            break
+        offset += 500
+        # Stop once trades are older than our window
+        oldest = batch[-1].get("timestamp", 0)
+        if int(oldest) < START_TS - 3600:
+            break
+    return all_trades
 
 
 async def get_book(session: aiohttp.ClientSession, token_id: str) -> dict | None:
@@ -56,75 +65,100 @@ async def get_book(session: aiohttp.ClientSession, token_id: str) -> dict | None
         return data if "bids" in data else None
 
 
+async def get_position(session: aiohttp.ClientSession, wallet: str, token_id: str) -> float:
+    """Exact current balance for one token via positions API with asset filter."""
+    async with session.get(
+        f"{DATA_API}/positions",
+        params={"user": wallet, "market": token_id, "limit": "10"},
+        timeout=aiohttp.ClientTimeout(total=10),
+    ) as resp:
+        if resp.status != 200:
+            return 0.0
+        data = await resp.json()
+    for p in data:
+        if str(p.get("asset", "")) == token_id:
+            return float(p.get("size", 0))
+    return 0.0
+
+
 async def main() -> None:
     if not REAL_PROXY_WALLET:
         print("REAL_PROXY_WALLET not set in .env — aborting")
         return
 
-    # Aggregate trades by token prefix (same market traded multiple times)
-    agg: dict[str, dict] = defaultdict(lambda: {"cost": 0.0, "shares": 0.0, "trades": []})
-    for prefix, cost, shares, price in TRADES:
-        agg[prefix]["cost"]   += cost
-        agg[prefix]["shares"] += shares
-        agg[prefix]["trades"].append((shares, price))
-
     async with aiohttp.ClientSession() as session:
-        positions = await get_positions(session, REAL_PROXY_WALLET)
-        print(f"\n📊 P&L Check for 2026-04-20 16:25 mispricing trades")
         print(f"Wallet: {REAL_PROXY_WALLET}")
-        print(f"Found {len(positions)} current positions in wallet\n")
+        print(f"Fetching trades in window {datetime.fromtimestamp(START_TS, tz=timezone.utc)} to {datetime.fromtimestamp(END_TS, tz=timezone.utc)}...\n")
 
-        # Map token_id prefix → position info
-        pos_by_prefix: dict[str, dict] = {}
-        for p in positions:
-            tid = str(p.get("asset", ""))
-            if tid:
-                pos_by_prefix[tid[:14]] = {
-                    "token_id": tid,
-                    "shares":   float(p.get("size", 0)),
-                    "market":   p.get("title") or p.get("slug", ""),
-                    "outcome":  p.get("outcome", ""),
-                }
+        trades = await fetch_trades(session, REAL_PROXY_WALLET)
+        print(f"Total trades fetched: {len(trades)}")
 
-        total_cost   = 0.0
-        total_value  = 0.0
-        total_shares_bought = 0.0
-        total_shares_held   = 0.0
+        # Filter to target window
+        window_trades = [
+            t for t in trades
+            if START_TS <= int(t.get("timestamp", 0)) <= END_TS
+        ]
+        print(f"Trades in 16:25-16:30 window: {len(window_trades)}\n")
 
-        for prefix, data in agg.items():
-            cost          = data["cost"]
-            shares_bought = data["shares"]
-            trades_str    = ", ".join(f"{s:.0f}@{p:.3f}" for s, p in data["trades"])
-            avg_price     = cost / shares_bought if shares_bought else 0
-            total_cost    += cost
-            total_shares_bought += shares_bought
+        if not window_trades:
+            print("No trades found in window — either timestamps are off or no trades executed")
+            return
 
-            pos = pos_by_prefix.get(prefix)
-            if not pos:
-                print(f"❓ {prefix}... NOT IN WALLET")
-                print(f"   Trades: {trades_str} = {cost:.2f} USDC for {shares_bought:.2f} shares")
-                print(f"   Either partial fill never settled, or already sold\n")
+        # Aggregate by (token_id, side)
+        agg: dict[tuple[str, str], dict] = defaultdict(
+            lambda: {"shares": 0.0, "cost": 0.0, "n": 0, "title": "", "outcome": ""}
+        )
+        for t in window_trades:
+            tid     = str(t.get("asset", ""))
+            side    = t.get("side", "")
+            size    = float(t.get("size", 0))
+            price   = float(t.get("price", 0))
+            title   = t.get("title") or t.get("slug") or ""
+            outcome = t.get("outcome", "")
+            key     = (tid, side)
+            agg[key]["shares"]  += size
+            agg[key]["cost"]    += size * price
+            agg[key]["n"]       += 1
+            agg[key]["title"]    = title
+            agg[key]["outcome"]  = outcome
+
+        print(f"{len(agg)} distinct (token, side) pairs\n")
+        print("=" * 70)
+
+        total_cost = 0.0
+        total_current_value = 0.0
+
+        for (tid, side), info in agg.items():
+            shares   = info["shares"]
+            cost     = info["cost"]
+            avg_px   = cost / shares if shares else 0
+            title    = info["title"][:55]
+            outcome  = info["outcome"]
+
+            if side != "BUY":
+                print(f"\nℹ️  SELL {shares:.2f} shares of {title} [{outcome}] @ avg {avg_px:.3f} = {cost:.2f} USDC received")
+                total_current_value += cost
                 continue
 
-            held = pos["shares"]
-            total_shares_held += held
+            total_cost += cost
 
-            book = await get_book(session, pos["token_id"])
+            held = await get_position(session, REAL_PROXY_WALLET, tid)
+            book = await get_book(session, tid)
+
             if not book:
-                print(f"⚠️  {pos['market'][:50]} [{pos['outcome']}] — no orderbook")
+                print(f"\n⚠️  {title} [{outcome}] — no orderbook (market closed?)")
+                print(f"    Bought {shares:.2f} shares @ avg {avg_px:.3f} = {cost:.2f} USDC | Held: {held:.2f}")
                 continue
 
-            bids = book.get("bids", [])
+            bids = sorted(book.get("bids", []), key=lambda b: float(b["price"]), reverse=True)
             asks = book.get("asks", [])
             best_bid = float(bids[0]["price"]) if bids else 0.0
-            bid_size = float(bids[0]["size"]) if bids else 0.0
-            best_ask = float(asks[-1]["price"]) if asks else 0.0
+            best_ask = float(min(asks, key=lambda a: float(a["price"]))["price"]) if asks else 0.0
 
-            # Simulate sell: match through bids until shares_to_sell exhausted
-            shares_to_sell = min(held, shares_bought)
-            revenue        = 0.0
-            remaining      = shares_to_sell
-            for b in sorted(bids, key=lambda x: float(x["price"]), reverse=True):
+            # Walk the bid book: how much can we actually sell from our 'held' balance
+            remaining = held
+            revenue   = 0.0
+            for b in bids:
                 if remaining <= 0:
                     break
                 lvl_price = float(b["price"])
@@ -132,25 +166,23 @@ async def main() -> None:
                 take      = min(remaining, lvl_size)
                 revenue  += take * lvl_price
                 remaining -= take
-            filled = shares_to_sell - remaining
-            avg_sell = revenue / filled if filled else 0
+            filled_now = held - remaining
+            avg_sell   = revenue / filled_now if filled_now else 0
 
-            pnl = revenue - (cost * (filled / shares_bought)) if shares_bought else 0
-            status = "✅" if pnl > 0 else "❌"
+            pnl = revenue - cost * (filled_now / shares) if shares else 0
+            total_current_value += revenue
+            tag = "✅" if pnl > 0 else "❌"
 
-            print(f"{status} {pos['market'][:50]} [{pos['outcome']}]")
-            print(f"   Bought: {shares_bought:.2f} @ avg {avg_price:.3f} = {cost:.2f} USDC ({trades_str})")
-            print(f"   Held now: {held:.2f} | Best bid: {best_bid:.3f} (depth {bid_size:.2f}) | Best ask: {best_ask:.3f}")
-            print(f"   If sold now: {filled:.2f} shares → {revenue:.2f} USDC (avg {avg_sell:.3f})")
-            print(f"   Unfilled: {remaining:.2f} shares (bid depth too thin)")
-            print(f"   P&L: {pnl:+.2f} USDC\n")
-            total_value += revenue
+            print(f"\n{tag} {title} [{outcome}]")
+            print(f"   BUY: {shares:.2f} shares @ avg {avg_px:.3f} = {cost:.2f} USDC ({info['n']} fills)")
+            print(f"   Held now: {held:.2f} | best_bid={best_bid:.3f} | best_ask={best_ask:.3f}")
+            print(f"   If sold now: {filled_now:.2f} shares → {revenue:.2f} USDC (avg {avg_sell:.3f})")
+            print(f"   P&L: {pnl:+.2f} USDC")
 
-        print("━" * 60)
-        print(f"Total bought: {total_shares_bought:.2f} shares for {total_cost:.2f} USDC")
-        print(f"Total held:   {total_shares_held:.2f} shares")
-        print(f"Total value (sold now): {total_value:.2f} USDC")
-        print(f"Total realised P&L if we exit now: {total_value - total_cost:+.2f} USDC")
+        print("\n" + "=" * 70)
+        print(f"Total BUY cost: {total_cost:.2f} USDC")
+        print(f"Total value (sold now + past SELLs): {total_current_value:.2f} USDC")
+        print(f"Net realised+unrealised P&L if exited now: {total_current_value - total_cost:+.2f} USDC")
 
 
 if __name__ == "__main__":
