@@ -15,6 +15,7 @@ causing RAM saturation (628MB+ with swap thrashing).
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
@@ -23,6 +24,22 @@ from src.arb.clob_ws import cleanup_lite_tokens, subscribe_mispricing_bulk
 GAMMA_API        = "https://gamma-api.polymarket.com"
 CLOB_API         = "https://clob.polymarket.com"
 REFRESH_INTERVAL = 600  # 10 minutes
+LITE_TRACK_DAYS  = 2    # only lite-track markets closing within this many days
+
+
+def _closes_soon(market: dict) -> bool:
+    """Return True if market closes within LITE_TRACK_DAYS days."""
+    end = market.get("end_date_iso") or market.get("endDateIso") or market.get("endDate") or ""
+    if not end:
+        return False
+    try:
+        if isinstance(end, (int, float)):
+            dt = datetime.fromtimestamp(float(end), tz=timezone.utc)
+        else:
+            dt = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+        return dt <= datetime.now(tz=timezone.utc) + timedelta(days=LITE_TRACK_DAYS)
+    except Exception:
+        return False
 
 # condition_id → {"tokens": [{"token_id": ..., "outcome": ...}, ...], "question": ...}
 _cache: dict[str, dict] = {}
@@ -40,7 +57,8 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
     """
     count  = 0
     offset = 0
-    all_token_ids: list[str] = []
+    all_token_ids: list[str] = []   # all active tokens (for cleanup)
+    lite_token_ids: list[str] = []  # only markets closing soon (for lite WS)
 
     while True:
         try:
@@ -96,6 +114,8 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
                 "question": m.get("question", cid[:20]),
             }
             all_token_ids.extend(t for t in token_ids if t)
+            if _closes_soon(m):
+                lite_token_ids.extend(t for t in token_ids if t)
             count += 1
 
         if len(data) < 100:
@@ -104,8 +124,9 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
         await asyncio.sleep(0.2)
 
     if all_token_ids:
-        cleanup_lite_tokens(set(all_token_ids))
-        subscribe_mispricing_bulk(all_token_ids)
+        cleanup_lite_tokens(set(lite_token_ids))
+        subscribe_mispricing_bulk(lite_token_ids)
+        print(f"[market_cache] lite tracking: {len(lite_token_ids)} tokens (closes within {LITE_TRACK_DAYS}d)")
     return count
 
 
