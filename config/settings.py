@@ -89,6 +89,7 @@ CLOB_MISPRICING_ENABLED    = os.getenv("CLOB_MISPRICING_ENABLED", "false").lower
 CLOB_MISPRICING_BID_RATIO  = float(os.getenv("CLOB_MISPRICING_BID_RATIO",  "0.90"))  # ask < best_bid * this
 CLOB_MISPRICING_MIN_SPREAD = float(os.getenv("CLOB_MISPRICING_MIN_SPREAD", "0.05"))  # ask < best_bid - this
 CLOB_MISPRICING_MAX_TRADE  = float(os.getenv("CLOB_MISPRICING_MAX_TRADE",  "50"))    # hard cap per trade (USDC)
+CLOB_MISPRICING_MIN_BID_DEPTH = float(os.getenv("CLOB_MISPRICING_MIN_BID_DEPTH", "50"))  # skip if bid_size * bid_price < this (anti-spoofing)
 
 # --- MAKER pre-positioning strategy ---
 # Place resting BUY orders at a low price on both outcomes of low-liquidity markets.

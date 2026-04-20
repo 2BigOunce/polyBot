@@ -18,6 +18,7 @@ import websockets
 from config.settings import (
     ARB_MAX_STALE_PRICE,
     CLOB_MISPRICING_BID_RATIO,
+    CLOB_MISPRICING_MIN_BID_DEPTH,
     CLOB_MISPRICING_MIN_SPREAD,
     # MAKER_SANDWICH_MAX_ASK,   # sandwich arb disabled — crossed books don't exist in practice
     # MAKER_SANDWICH_MIN_BID,   # (desaru/notprivate confirmed: they do stale arb post-resolution)
@@ -218,16 +219,19 @@ def _run_detection(token_id: str, asks: list, bids: list) -> None:
         return
 
     best_bid     = float(bids[0]["price"])
+    best_bid_size = float(bids[0].get("size", 0))
     cheapest_ask = min(asks, key=lambda a: float(a["price"]))
     ask_price    = float(cheapest_ask["price"])
     ask_size     = float(cheapest_ask.get("size", 0))
 
-    # Mispricing detection
+    # Mispricing detection — require min bid depth (USDC) to filter phantom/spoof bids
+    bid_depth_usdc = best_bid * best_bid_size
     if (
         best_bid > 0.05
         and ask_size > 0
         and ask_price < best_bid * CLOB_MISPRICING_BID_RATIO
         and ask_price < best_bid - CLOB_MISPRICING_MIN_SPREAD
+        and bid_depth_usdc >= CLOB_MISPRICING_MIN_BID_DEPTH
     ):
         now = time.monotonic()
         if now - _mispricing_cooldown.get(token_id, 0.0) >= _MISPRICING_COOLDOWN_S:
@@ -249,11 +253,22 @@ def _run_detection(token_id: str, asks: list, bids: list) -> None:
 def _store_book(token_id: str, asks: list, bids: list) -> None:
     """Replace cached book, recompute stale asks, trigger detection."""
     if token_id in _lite_tokens:
-        best_bid = max((float(b["price"]) for b in bids), default=0.0)
+        # Find highest bid and its size (real depth, not synthetic)
+        if bids:
+            top_bid = max(bids, key=lambda b: float(b["price"]))
+            best_bid      = float(top_bid["price"])
+            best_bid_size = float(top_bid.get("size", 0))
+        else:
+            best_bid = 0.0
+            best_bid_size = 0.0
         sorted_asks = sorted(asks, key=lambda a: float(a["price"]))[:5]
-        _price_signals[token_id] = {"best_bid": best_bid, "asks": sorted_asks}
+        _price_signals[token_id] = {
+            "best_bid":      best_bid,
+            "best_bid_size": best_bid_size,
+            "asks":          sorted_asks,
+        }
         if sorted_asks and best_bid > 0.05:
-            _run_detection(token_id, sorted_asks, [{"price": str(best_bid), "size": "1"}])
+            _run_detection(token_id, sorted_asks, [{"price": str(best_bid), "size": str(best_bid_size)}])
         return
 
     global _book_update_count
@@ -291,11 +306,17 @@ def _apply_side_update(token_id: str, side: str, updates: list[dict]) -> None:
             return  # No snapshot yet
         if side == "bids":
             for entry in updates:
-                if float(entry.get("size", 0)) > 0:
-                    new_bid = float(entry["price"])
-                    if new_bid > signal["best_bid"]:
-                        signal["best_bid"] = new_bid
-                # Removed bid: ignore (stale best_bid acceptable for detection)
+                new_price = float(entry.get("price", 0))
+                new_size  = float(entry.get("size", 0))
+                if new_size > 0 and new_price > signal["best_bid"]:
+                    signal["best_bid"]      = new_price
+                    signal["best_bid_size"] = new_size
+                elif new_size > 0 and new_price == signal["best_bid"]:
+                    signal["best_bid_size"] = new_size  # depth update at same price
+                elif new_size == 0 and new_price == signal["best_bid"]:
+                    # Top bid removed — we don't know the next bid, reset size to 0
+                    # (conservative: depth filter will reject until next snapshot)
+                    signal["best_bid_size"] = 0.0
         else:
             ask_map = {a["price"]: a for a in signal["asks"]}
             for entry in updates:
@@ -309,7 +330,11 @@ def _apply_side_update(token_id: str, side: str, updates: list[dict]) -> None:
             signal["asks"] = sorted(ask_map.values(), key=lambda a: float(a["price"]))[:5]
         asks = signal["asks"]
         if asks and signal["best_bid"] > 0.05:
-            _run_detection(token_id, asks, [{"price": str(signal["best_bid"]), "size": "1"}])
+            _run_detection(
+                token_id,
+                asks,
+                [{"price": str(signal["best_bid"]), "size": str(signal["best_bid_size"])}],
+            )
         return
 
     book = _books.get(token_id)
