@@ -24,14 +24,24 @@ CLOB_SECRET = os.getenv("CLOB_SECRET")
 CLOB_PASSPHRASE = os.getenv("CLOB_PASSPHRASE")
 
 # --- Polymarket contract addresses (Polygon mainnet) ---
-USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"       # Bridged USDC (USDC.e), 6 decimals
-CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"       # Main order-matching exchange
-NEG_RISK_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a"   # NegRisk order-matching exchange
-NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"    # NegRisk adapter — ERC-1155 tokens for neg_risk markets
-GNOSIS_CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"          # Gnosis ConditionalTokens — ERC-1155 tokens for standard markets
+# V1 (legacy, valid until 28 April 2026 ~11:00 UTC)
+USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"       # Bridged USDC (USDC.e), 6 decimals — legacy collateral
+CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"       # V1 main order-matching exchange
+NEG_RISK_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a"   # V1 NegRisk order-matching exchange
 
-# All contracts that can receive USDC deposits — we monitor transfers to any of these
-POLYMARKET_CONTRACTS = [CTF_EXCHANGE, NEG_RISK_EXCHANGE, NEG_RISK_ADAPTER]
+# V2 (active from 28 April 2026 ~11:00 UTC)
+PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"        # Polymarket USD, 1:1 backed by USDC — V2 collateral
+COLLATERAL_ONRAMP = "0x93070a847efEf7F70739046A929D47a521F5B8ee"   # wraps USDC.e → pUSD via wrap(asset, to, amount)
+CTF_EXCHANGE_V2 = "0xE111180000d2663C0091e4f400237545B87B996B"     # V2 main exchange
+NEG_RISK_EXCHANGE_V2 = "0xe2222d279d744050d28e00520010520000310F59"  # V2 NegRisk exchange
+
+# Unchanged across V1 → V2 (ERC-1155 conditional tokens)
+NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"    # NegRisk adapter — ERC-1155 for neg_risk markets
+GNOSIS_CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"          # Gnosis ConditionalTokens — ERC-1155 for standard markets
+
+# Exchange contracts that can receive collateral deposits — union of V1 + V2 so the deposit monitor
+# keeps catching insider inflows during and after the migration window
+POLYMARKET_CONTRACTS = [CTF_EXCHANGE, NEG_RISK_EXCHANGE, CTF_EXCHANGE_V2, NEG_RISK_EXCHANGE_V2, NEG_RISK_ADAPTER]
 
 # --- Detection thresholds ---
 
