@@ -19,8 +19,8 @@ set -euo pipefail
 : "${VPS_HOST:?Set VPS_HOST=polybot@<ip>}"
 : "${SSH_KEY:?Set SSH_KEY=path/to/polybot-dublin.pem}"
 
-REMOTE_DIR="/home/polybot/polyBot"
-REMOTE_STAGE="/tmp/polybot_v2_deploy"
+REMOTE_DIR="/home/ubuntu/polyBot"
+REMOTE_VENV="/home/ubuntu/polyBot/venv"
 SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new)
 
 V2_TRADING_FILES=(
@@ -43,34 +43,19 @@ done
 echo "✅ all $((${#V2_TRADING_FILES[@]} + ${#V2_SCRIPTS[@]})) files present locally"
 
 echo ""
-echo "=== [2/4] scp V2 files to $VPS_HOST (stage in $REMOTE_STAGE) ==="
-# Stage in /tmp (writable by the SSH user), then sudo-move + chown to polybot.
-ssh "${SSH_OPTS[@]}" "$VPS_HOST" "mkdir -p $REMOTE_STAGE/trading $REMOTE_STAGE/scripts"
-scp "${SSH_OPTS[@]}" "${V2_TRADING_FILES[@]}" "$VPS_HOST:$REMOTE_STAGE/trading/"
-scp "${SSH_OPTS[@]}" "${V2_SCRIPTS[@]}"       "$VPS_HOST:$REMOTE_STAGE/scripts/"
-ssh "${SSH_OPTS[@]}" "$VPS_HOST" bash <<REMOTE
-set -euo pipefail
-sudo mv $REMOTE_STAGE/trading/*.py $REMOTE_DIR/src/trading/
-sudo mv $REMOTE_STAGE/scripts/*.py $REMOTE_DIR/scripts/
-sudo chown polybot:polybot $REMOTE_DIR/src/trading/*_v2.py
-sudo chown polybot:polybot $REMOTE_DIR/scripts/wrap_usdc_to_pusd.py \
-                           $REMOTE_DIR/scripts/cancel_all_maker_orders.py \
-                           $REMOTE_DIR/scripts/test_py_clob_v2.py
-rm -rf $REMOTE_STAGE
-REMOTE
-echo "✅ files copied and chowned to polybot"
+echo "=== [2/4] scp V2 files directly to $VPS_HOST:$REMOTE_DIR ==="
+scp "${SSH_OPTS[@]}" "${V2_TRADING_FILES[@]}" "$VPS_HOST:$REMOTE_DIR/src/trading/"
+scp "${SSH_OPTS[@]}" "${V2_SCRIPTS[@]}"       "$VPS_HOST:$REMOTE_DIR/scripts/"
+echo "✅ files copied"
 
 echo ""
 echo "=== [3/4] Installing py_clob_client_v2 in VPS venv ==="
-ssh "${SSH_OPTS[@]}" "$VPS_HOST" bash <<'REMOTE'
+ssh "${SSH_OPTS[@]}" "$VPS_HOST" bash <<REMOTE
 set -euo pipefail
-cd /home/polybot/polyBot
-# venv path used by the systemd unit (check with: systemctl cat polybot)
-VENV="/home/polybot/polyBot/.venv"
-[[ -d "$VENV" ]] || VENV="/home/polybot/venv"
-echo "Using venv: $VENV"
-sudo -u polybot "$VENV/bin/pip" install --upgrade py_clob_client_v2 2>&1 | tail -5
-sudo -u polybot "$VENV/bin/python" -c "import py_clob_client_v2; print('py_clob_client_v2 version:', getattr(py_clob_client_v2, '__version__', 'unknown'))"
+cd $REMOTE_DIR
+echo "Using venv: $REMOTE_VENV"
+$REMOTE_VENV/bin/pip install --upgrade py_clob_client_v2 2>&1 | tail -5
+$REMOTE_VENV/bin/python -c "import py_clob_client_v2; print('py_clob_client_v2 version:', getattr(py_clob_client_v2, '__version__', 'unknown'))"
 REMOTE
 echo "✅ SDK installed"
 
@@ -82,12 +67,10 @@ fi
 
 echo ""
 echo "=== [4/4] Running V2 SDK smoke test on VPS ==="
-ssh "${SSH_OPTS[@]}" "$VPS_HOST" bash <<'REMOTE'
+ssh "${SSH_OPTS[@]}" "$VPS_HOST" bash <<REMOTE
 set -euo pipefail
-cd /home/polybot/polyBot
-VENV="/home/polybot/polyBot/.venv"
-[[ -d "$VENV" ]] || VENV="/home/polybot/venv"
-sudo -u polybot env PYTHONPATH=. "$VENV/bin/python" scripts/test_py_clob_v2.py
+cd $REMOTE_DIR
+PYTHONPATH=. $REMOTE_VENV/bin/python scripts/test_py_clob_v2.py
 REMOTE
 
 echo ""

@@ -24,9 +24,9 @@
 
 set -euo pipefail
 
-REPO="/home/polybot/polyBot"
+REPO="/home/ubuntu/polyBot"
 TRADING="$REPO/src/trading"
-VENV="$REPO/.venv"; [[ -d "$VENV" ]] || VENV="/home/polybot/venv"
+VENV="$REPO/venv"
 
 # (V1 canonical name, V2 source name)
 MODULES=(
@@ -65,7 +65,7 @@ echo "=== [1/5] Pre-flight checks ==="
 for m in "${MODULES[@]}"; do
   [[ -f "$TRADING/${m}_v2.py" ]] || { echo "❌ missing $TRADING/${m}_v2.py — run deploy_v2_vps.sh first"; exit 1; }
 done
-sudo -u polybot "$VENV/bin/python" -c "import py_clob_client_v2" || {
+"$VENV/bin/python" -c "import py_clob_client_v2" || {
   echo "❌ py_clob_client_v2 not installed in venv"; exit 1;
 }
 echo "✅ all V2 files + SDK present"
@@ -84,13 +84,13 @@ for m in "${MODULES[@]}"; do
     echo "  📦 $m.py → $m.v1.backup.py"
   fi
   cp -f "$TRADING/${m}_v2.py" "$TRADING/$m.py"
-  chown polybot:polybot "$TRADING/$m.py"
+  chown ubuntu:ubuntu "$TRADING/$m.py"
   echo "  ✅ promoted ${m}_v2.py → $m.py"
 done
 
 echo ""
 echo "=== [4/5] Sanity-importing V2 modules ==="
-sudo -u polybot env PYTHONPATH="$REPO" "$VENV/bin/python" -c "
+env PYTHONPATH="$REPO" "$VENV/bin/python" -c "
 import importlib
 for m in ['src.trading.arb_executor',
           'src.trading.clob_mispricing_executor',

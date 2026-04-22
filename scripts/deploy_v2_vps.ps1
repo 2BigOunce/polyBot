@@ -18,8 +18,8 @@ if (-not $env:SSH_KEY)  { Write-Error "Set `$env:SSH_KEY = 'path\to\polybot-dubl
 
 $VpsHost    = $env:VPS_HOST
 $SshKey     = $env:SSH_KEY
-$RemoteDir  = "/home/polybot/polyBot"
-$RemoteStage = "/tmp/polybot_v2_deploy"
+$RemoteDir  = "/home/ubuntu/polyBot"
+$RemoteVenv = "/home/ubuntu/polyBot/venv"
 $SshArgs    = @("-i", $SshKey, "-o", "StrictHostKeyChecking=accept-new")
 
 $V2TradingFiles = @(
@@ -41,38 +41,22 @@ foreach ($f in ($V2TradingFiles + $V2Scripts)) {
 Write-Host "OK all $($V2TradingFiles.Count + $V2Scripts.Count) files present locally"
 
 Write-Host ""
-Write-Host "=== [2/4] scp V2 files to $VpsHost (stage in $RemoteStage) ==="
-& ssh @SshArgs $VpsHost "mkdir -p $RemoteStage/trading $RemoteStage/scripts"
+Write-Host "=== [2/4] scp V2 files directly to $VpsHost`:$RemoteDir ==="
+& scp @SshArgs $V2TradingFiles "${VpsHost}:${RemoteDir}/src/trading/"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-& scp @SshArgs $V2TradingFiles "${VpsHost}:${RemoteStage}/trading/"
+& scp @SshArgs $V2Scripts "${VpsHost}:${RemoteDir}/scripts/"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-& scp @SshArgs $V2Scripts "${VpsHost}:${RemoteStage}/scripts/"
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-$moveCmd = @"
-set -euo pipefail
-sudo mv $RemoteStage/trading/*.py $RemoteDir/src/trading/
-sudo mv $RemoteStage/scripts/*.py $RemoteDir/scripts/
-sudo chown polybot:polybot $RemoteDir/src/trading/arb_executor_v2.py $RemoteDir/src/trading/clob_mispricing_executor_v2.py $RemoteDir/src/trading/maker_positioning_v2.py $RemoteDir/src/trading/real_trader_v2.py
-sudo chown polybot:polybot $RemoteDir/scripts/wrap_usdc_to_pusd.py $RemoteDir/scripts/cancel_all_maker_orders.py $RemoteDir/scripts/test_py_clob_v2.py
-rm -rf $RemoteStage
-"@
-& ssh @SshArgs $VpsHost $moveCmd
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Write-Host "OK files copied and chowned to polybot"
+Write-Host "OK files copied"
 
 Write-Host ""
 Write-Host "=== [3/4] Installing py_clob_client_v2 in VPS venv ==="
 $installCmd = @"
 set -euo pipefail
-cd /home/polybot/polyBot
-VENV=/home/polybot/polyBot/.venv
-[ -d "`$VENV" ] || VENV=/home/polybot/venv
-echo "Using venv: `$VENV"
-sudo -u polybot "`$VENV/bin/pip" install --upgrade py_clob_client_v2 2>&1 | tail -5
-sudo -u polybot "`$VENV/bin/python" -c "import py_clob_client_v2; print('py_clob_client_v2 version:', getattr(py_clob_client_v2, '__version__', 'unknown'))"
+cd $RemoteDir
+echo "Using venv: $RemoteVenv"
+$RemoteVenv/bin/pip install --upgrade py_clob_client_v2 2>&1 | tail -5
+$RemoteVenv/bin/python -c "import py_clob_client_v2; print('py_clob_client_v2 version:', getattr(py_clob_client_v2, '__version__', 'unknown'))"
 "@
 & ssh @SshArgs $VpsHost $installCmd
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -88,10 +72,8 @@ Write-Host ""
 Write-Host "=== [4/4] Running V2 SDK smoke test on VPS ==="
 $testCmd = @"
 set -euo pipefail
-cd /home/polybot/polyBot
-VENV=/home/polybot/polyBot/.venv
-[ -d "`$VENV" ] || VENV=/home/polybot/venv
-sudo -u polybot env PYTHONPATH=. "`$VENV/bin/python" scripts/test_py_clob_v2.py
+cd $RemoteDir
+PYTHONPATH=. $RemoteVenv/bin/python scripts/test_py_clob_v2.py
 "@
 & ssh @SshArgs $VpsHost $testCmd
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
