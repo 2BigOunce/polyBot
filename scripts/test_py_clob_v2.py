@@ -69,41 +69,57 @@ def main() -> int:
     )
     print(f"       ✅ client built, funder={REAL_PROXY_WALLET}")
 
-    # --- 2. Fetch a token to probe ---
+    # --- 2+3. Find a market with a live orderbook ---
     token_id = args.token
-    if not token_id:
-        print("\n[2/4] No --token given — fetching first active market from /markets…")
+    if token_id:
+        print(f"\n[2/4] Using --token {token_id[:24]}…")
+        print(f"\n[3/4] Fetching orderbook for {token_id[:24]}…")
+        try:
+            book = client.get_order_book(token_id)
+            bids = getattr(book, "bids", None) or (book.get("bids", []) if isinstance(book, dict) else [])
+            asks = getattr(book, "asks", None) or (book.get("asks", []) if isinstance(book, dict) else [])
+            print(f"       ✅ book: {len(bids)} bids / {len(asks)} asks")
+        except Exception as e:
+            print(f"       ❌ get_order_book failed: {e}")
+            return 1
+    else:
+        print("\n[2/4] No --token given — scanning /markets for one with a live orderbook…")
         try:
             markets = client.get_markets()
-            # Accept either list or {'data': [...]} shape
-            items = markets if isinstance(markets, list) else markets.get("data", [])
-            for m in items:
-                toks = m.get("tokens") or []
-                for t in toks:
-                    tid = t.get("token_id") or t.get("tokenId")
-                    if tid:
-                        token_id = tid
-                        print(f"       ✅ picked token {token_id[:24]}… from {m.get('question', '')[:50]}")
-                        break
-                if token_id:
-                    break
         except Exception as e:
-            print(f"       ⚠️  get_markets failed: {e}")
+            print(f"       ❌ get_markets failed: {e}")
+            return 1
+        items = markets if isinstance(markets, list) else markets.get("data", [])
 
-    if not token_id:
-        print("       ❌ no token_id available — provide --token <id>")
-        return 1
-
-    # --- 3. Book fetch ---
-    print(f"\n[3/4] Fetching orderbook for {token_id[:24]}…")
-    try:
-        book = client.get_order_book(token_id)
-        bids = getattr(book, "bids", None) or book.get("bids", []) if isinstance(book, dict) else []
-        asks = getattr(book, "asks", None) or book.get("asks", []) if isinstance(book, dict) else []
-        print(f"       ✅ book: {len(bids)} bids / {len(asks)} asks")
-    except Exception as e:
-        print(f"       ❌ get_order_book failed: {e}")
-        return 1
+        found = False
+        tried = 0
+        for m in items:
+            if m.get("closed") or m.get("archived"):
+                continue
+            for t in (m.get("tokens") or []):
+                tid = t.get("token_id") or t.get("tokenId")
+                if not tid:
+                    continue
+                tried += 1
+                try:
+                    book = client.get_order_book(tid)
+                except Exception:
+                    if tried >= 30:
+                        break
+                    continue
+                bids = getattr(book, "bids", None) or (book.get("bids", []) if isinstance(book, dict) else [])
+                asks = getattr(book, "asks", None) or (book.get("asks", []) if isinstance(book, dict) else [])
+                if bids or asks:
+                    token_id = tid
+                    print(f"       ✅ picked token {tid[:24]}… from {m.get('question', '')[:50]}")
+                    print(f"\n[3/4] Orderbook: {len(bids)} bids / {len(asks)} asks")
+                    found = True
+                    break
+            if found or tried >= 30:
+                break
+        if not found:
+            print(f"       ❌ no live orderbook found after {tried} attempts")
+            return 1
 
     # --- 4. Optional: place + cancel test order ---
     if args.order:

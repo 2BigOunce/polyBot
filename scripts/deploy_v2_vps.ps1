@@ -54,9 +54,10 @@ Write-Host "=== [3/4] Installing py_clob_client_v2 in VPS venv ==="
 $installCmd = @"
 set -euo pipefail
 cd $RemoteDir
-echo "Using venv: $RemoteVenv"
+echo 'Using venv: $RemoteVenv'
 $RemoteVenv/bin/pip install --upgrade py_clob_client_v2 2>&1 | tail -5
-$RemoteVenv/bin/python -c "import py_clob_client_v2; print('py_clob_client_v2 version:', getattr(py_clob_client_v2, '__version__', 'unknown'))"
+$RemoteVenv/bin/python -c 'import py_clob_client_v2'
+echo 'Import OK'
 "@
 & ssh @SshArgs $VpsHost $installCmd
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
