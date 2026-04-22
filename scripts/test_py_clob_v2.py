@@ -69,57 +69,51 @@ def main() -> int:
     )
     print(f"       ✅ client built, funder={REAL_PROXY_WALLET}")
 
-    # --- 2+3. Find a market with a live orderbook ---
+    # --- 2. Find an active token via Gamma API (ordered by volume) ---
     token_id = args.token
-    if token_id:
-        print(f"\n[2/4] Using --token {token_id[:24]}…")
-        print(f"\n[3/4] Fetching orderbook for {token_id[:24]}…")
+    if not token_id:
+        print("\n[2/4] Fetching an active market from Gamma API (gamma-api.polymarket.com)…")
+        import urllib.request, json as _json
         try:
-            book = client.get_order_book(token_id)
-            bids = getattr(book, "bids", None) or (book.get("bids", []) if isinstance(book, dict) else [])
-            asks = getattr(book, "asks", None) or (book.get("asks", []) if isinstance(book, dict) else [])
-            print(f"       ✅ book: {len(bids)} bids / {len(asks)} asks")
+            url = ("https://gamma-api.polymarket.com/markets"
+                   "?active=true&closed=false&limit=20&order=volume&ascending=false")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                gamma = _json.loads(r.read())
         except Exception as e:
-            print(f"       ❌ get_order_book failed: {e}")
+            print(f"       ❌ Gamma fetch failed: {e}")
             return 1
-    else:
-        print("\n[2/4] No --token given — scanning /markets for one with a live orderbook…")
-        try:
-            markets = client.get_markets()
-        except Exception as e:
-            print(f"       ❌ get_markets failed: {e}")
-            return 1
-        items = markets if isinstance(markets, list) else markets.get("data", [])
-
-        found = False
-        tried = 0
-        for m in items:
-            if m.get("closed") or m.get("archived"):
+        print(f"       Gamma returned {len(gamma)} active markets")
+        for m in gamma:
+            # clobTokenIds is a JSON-encoded string: '["12345", "67890"]'
+            raw = m.get("clobTokenIds")
+            if not raw:
                 continue
-            for t in (m.get("tokens") or []):
-                tid = t.get("token_id") or t.get("tokenId")
-                if not tid:
-                    continue
-                tried += 1
-                try:
-                    book = client.get_order_book(tid)
-                except Exception:
-                    if tried >= 30:
-                        break
-                    continue
-                bids = getattr(book, "bids", None) or (book.get("bids", []) if isinstance(book, dict) else [])
-                asks = getattr(book, "asks", None) or (book.get("asks", []) if isinstance(book, dict) else [])
-                if bids or asks:
+            try:
+                toks = _json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                continue
+            for tid in toks:
+                if tid and tid != "0":
                     token_id = tid
                     print(f"       ✅ picked token {tid[:24]}… from {m.get('question', '')[:50]}")
-                    print(f"\n[3/4] Orderbook: {len(bids)} bids / {len(asks)} asks")
-                    found = True
                     break
-            if found or tried >= 30:
+            if token_id:
                 break
-        if not found:
-            print(f"       ❌ no live orderbook found after {tried} attempts")
+        if not token_id:
+            print("       ❌ no usable token in Gamma response")
             return 1
+
+    # --- 3. Book fetch via V2 SDK (the actual test) ---
+    print(f"\n[3/4] Fetching orderbook for {token_id[:24]}… via py_clob_client_v2")
+    try:
+        book = client.get_order_book(token_id)
+        bids = getattr(book, "bids", None) or (book.get("bids", []) if isinstance(book, dict) else [])
+        asks = getattr(book, "asks", None) or (book.get("asks", []) if isinstance(book, dict) else [])
+        print(f"       ✅ book: {len(bids)} bids / {len(asks)} asks")
+    except Exception as e:
+        print(f"       ❌ get_order_book failed: {e}")
+        return 1
 
     # --- 4. Optional: place + cancel test order ---
     if args.order:
