@@ -20,6 +20,7 @@ set -euo pipefail
 : "${SSH_KEY:?Set SSH_KEY=path/to/polybot-dublin.pem}"
 
 REMOTE_DIR="/home/polybot/polyBot"
+REMOTE_STAGE="/tmp/polybot_v2_deploy"
 SSH_OPTS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new)
 
 V2_TRADING_FILES=(
@@ -42,10 +43,22 @@ done
 echo "✅ all $((${#V2_TRADING_FILES[@]} + ${#V2_SCRIPTS[@]})) files present locally"
 
 echo ""
-echo "=== [2/4] scp V2 files to $VPS_HOST:$REMOTE_DIR ==="
-scp "${SSH_OPTS[@]}" "${V2_TRADING_FILES[@]}" "$VPS_HOST:$REMOTE_DIR/src/trading/"
-scp "${SSH_OPTS[@]}" "${V2_SCRIPTS[@]}"       "$VPS_HOST:$REMOTE_DIR/scripts/"
-echo "✅ files copied"
+echo "=== [2/4] scp V2 files to $VPS_HOST (stage in $REMOTE_STAGE) ==="
+# Stage in /tmp (writable by the SSH user), then sudo-move + chown to polybot.
+ssh "${SSH_OPTS[@]}" "$VPS_HOST" "mkdir -p $REMOTE_STAGE/trading $REMOTE_STAGE/scripts"
+scp "${SSH_OPTS[@]}" "${V2_TRADING_FILES[@]}" "$VPS_HOST:$REMOTE_STAGE/trading/"
+scp "${SSH_OPTS[@]}" "${V2_SCRIPTS[@]}"       "$VPS_HOST:$REMOTE_STAGE/scripts/"
+ssh "${SSH_OPTS[@]}" "$VPS_HOST" bash <<REMOTE
+set -euo pipefail
+sudo mv $REMOTE_STAGE/trading/*.py $REMOTE_DIR/src/trading/
+sudo mv $REMOTE_STAGE/scripts/*.py $REMOTE_DIR/scripts/
+sudo chown polybot:polybot $REMOTE_DIR/src/trading/*_v2.py
+sudo chown polybot:polybot $REMOTE_DIR/scripts/wrap_usdc_to_pusd.py \
+                           $REMOTE_DIR/scripts/cancel_all_maker_orders.py \
+                           $REMOTE_DIR/scripts/test_py_clob_v2.py
+rm -rf $REMOTE_STAGE
+REMOTE
+echo "✅ files copied and chowned to polybot"
 
 echo ""
 echo "=== [3/4] Installing py_clob_client_v2 in VPS venv ==="
