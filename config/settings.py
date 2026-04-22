@@ -39,9 +39,18 @@ NEG_RISK_EXCHANGE_V2 = "0xe2222d279d744050d28e00520010520000310F59"  # V2 NegRis
 NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"    # NegRisk adapter — ERC-1155 for neg_risk markets
 GNOSIS_CTF = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"          # Gnosis ConditionalTokens — ERC-1155 for standard markets
 
-# Exchange contracts that can receive collateral deposits — union of V1 + V2 so the deposit monitor
-# keeps catching insider inflows during and after the migration window
-POLYMARKET_CONTRACTS = [CTF_EXCHANGE, NEG_RISK_EXCHANGE, CTF_EXCHANGE_V2, NEG_RISK_EXCHANGE_V2, NEG_RISK_ADAPTER]
+# Contracts that can receive USDC.e deposits (filter for the deposit monitor Transfer subscription).
+# Pre-V2: users deposit USDC.e directly to the V1 exchanges.
+# Post-V2: users must wrap USDC.e → pUSD through CollateralOnramp first, so ONRAMP becomes the
+# choke point of incoming capital. V1 exchange addresses are kept (harmless — no more events after
+# cutover) and V2 exchange addresses are included in case a contract path lets USDC.e land there
+# directly during the migration window.
+POLYMARKET_CONTRACTS = [
+    CTF_EXCHANGE, NEG_RISK_EXCHANGE,           # V1 exchanges (go silent post-cutover)
+    CTF_EXCHANGE_V2, NEG_RISK_EXCHANGE_V2,     # V2 exchanges
+    COLLATERAL_ONRAMP,                         # V2 wrap choke point — catches all new capital
+    NEG_RISK_ADAPTER,
+]
 
 # --- Detection thresholds ---
 

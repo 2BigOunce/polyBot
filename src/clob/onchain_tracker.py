@@ -4,11 +4,21 @@ import json
 import websockets
 from web3 import AsyncWeb3
 
-from config.settings import CTF_EXCHANGE, NEG_RISK_EXCHANGE, RPC_URL_TRACKER
+from config.settings import (
+    CTF_EXCHANGE,
+    CTF_EXCHANGE_V2,
+    NEG_RISK_EXCHANGE,
+    NEG_RISK_EXCHANGE_V2,
+    RPC_URL_TRACKER,
+)
 from src.clob import watched_wallets
 
 ORDER_FILLED_TOPIC = "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6"
-CLOB_CONTRACTS    = [CTF_EXCHANGE, NEG_RISK_EXCHANGE]
+# Union V1 + V2 exchanges so the tracker keeps waking pollers through the cutover window.
+# Pre-28-April: V2 addresses are silent. Post-28-April: V1 addresses go silent.
+# Assumes the V2 OrderFilled event signature is unchanged. If V2 emits a different event, the
+# wake-up path goes silent and we fall back to the 30s polling interval — degraded, not broken.
+CLOB_CONTRACTS    = [CTF_EXCHANGE, NEG_RISK_EXCHANGE, CTF_EXCHANGE_V2, NEG_RISK_EXCHANGE_V2]
 
 # One asyncio.Event per watched wallet — set when an on-chain trade is detected
 _wake_events: dict[str, asyncio.Event] = {}
