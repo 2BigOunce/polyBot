@@ -10,7 +10,10 @@ Two responsibilities:
 """
 
 import asyncio
+import json
+import random
 import time
+import urllib.request
 
 import orjson
 import websockets
@@ -47,8 +50,8 @@ _mispricing_cooldown: dict[tuple[str, str], float] = {}
 _MISPRICING_COOLDOWN_S = 30.0
 
 # Lightweight tracking for open-market mispricing (all active markets from market_cache).
-# Stores only best_bid + top-5 asks instead of full orderbook — ~15MB for 30k tokens vs 600MB+.
-# token_id → {"best_bid": float, "asks": [{"price": str, "size": str}, ...]}
+# Stores top-5 bids + top-5 asks (symmetric, both sides can go up and down via deltas).
+# token_id → {"bids": [{"price": str, "size": str}, ...], "asks": [...]}
 _price_signals: dict[str, dict] = {}
 _lite_tokens: set[str] = set()  # tokens using lite tracking (not full book)
 
@@ -106,11 +109,26 @@ def unregister_bid_watcher(token_id: str) -> None:
         event.set()  # wake up _watch_bid_and_sell so it can exit cleanly
 
 
-# Diagnostic counters
+# Diagnostic heartbeats — time-based throttling (at most once every HEARTBEAT_SECS)
+# Count-based intervals flooded journalctl at ~200 msg/s; time floor keeps logs readable.
 _book_update_count = 0
-_BOOK_LOG_INTERVAL = 100
 _total_messages = 0
-_MSG_LOG_INTERVAL = 200
+_HEARTBEAT_SECS = 30.0
+_last_msg_log = 0.0
+_last_book_log = 0.0
+
+# Mispricing funnel telemetry: where do candidates die?
+_det_calls_lite = 0
+_det_calls_full = 0
+_det_bid_ok = 0
+_det_ask_ok = 0
+_det_ratio_ok = 0
+_det_spread_ok = 0
+_det_depth_ok = 0
+_det_best_spread_pct = -999.0   # max (bid-ask)/bid seen (can be negative)
+_det_worst_spread_pct = 999.0   # min (bid-ask)/bid seen
+_det_best_depth = 0.0
+_last_funnel_log = 0.0
 
 
 def get_mispricing_queue() -> asyncio.Queue:
@@ -213,6 +231,77 @@ def get_lite_stale(token_id: str, max_price: float) -> list[dict] | None:
     return sorted(stale, key=lambda a: float(a["price"])) or None
 
 
+async def _validate_and_queue(token_id: str, ws_ask_price: float, ws_ask_size: float, ws_best_bid: float) -> None:
+    """
+    Re-fetch /book via REST and confirm the crossed state before queuing.
+    If REST confirms: queue with REST values.
+    If REST contradicts: refresh lite cache to self-heal.
+    """
+    loop = asyncio.get_running_loop()
+
+    def _fetch():
+        url = f"https://clob.polymarket.com/book?token_id={token_id}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return json.loads(r.read())
+
+    try:
+        data = await asyncio.wait_for(loop.run_in_executor(None, _fetch), timeout=4)
+    except Exception as e:
+        print(f"[mispricing] REST validation failed {token_id[:20]}: {e}")
+        return
+
+    rest_bids = data.get("bids", []) or []
+    rest_asks = data.get("asks", []) or []
+    if not rest_bids or not rest_asks:
+        return
+
+    rest_top_bid = max(
+        (b for b in rest_bids if float(b.get("size", 0)) > 0),
+        key=lambda b: float(b["price"]), default=None,
+    )
+    rest_cheapest_ask = min(
+        (a for a in rest_asks if float(a.get("size", 0)) > 0),
+        key=lambda a: float(a["price"]), default=None,
+    )
+    if not rest_top_bid or not rest_cheapest_ask:
+        return
+
+    rest_bid = float(rest_top_bid["price"])
+    rest_bid_size = float(rest_top_bid.get("size", 0))
+    rest_ask = float(rest_cheapest_ask["price"])
+    rest_ask_size = float(rest_cheapest_ask.get("size", 0))
+
+    still_crossed = (
+        rest_bid > 0.05
+        and rest_ask_size > 0
+        and rest_ask < rest_bid * CLOB_MISPRICING_BID_RATIO
+        and rest_ask < rest_bid - CLOB_MISPRICING_MIN_SPREAD
+        and rest_bid * rest_bid_size >= CLOB_MISPRICING_MIN_BID_DEPTH
+    )
+
+    if still_crossed:
+        _mispricing_queue.put_nowait({
+            "token_id":  token_id,
+            "ask_price": rest_ask,
+            "ask_size":  rest_ask_size,
+            "best_bid":  rest_bid,
+        })
+        print(f"[mispricing] ✅ REST confirmed {token_id[:20]}... ask={rest_ask:.3f} bid={rest_bid:.3f}")
+    else:
+        # WS lied — refresh cache with REST truth so next detection is accurate
+        if token_id in _lite_tokens:
+            _price_signals[token_id] = {
+                "bids": sorted(rest_bids, key=lambda b: float(b["price"]), reverse=True)[:5],
+                "asks": sorted(rest_asks, key=lambda a: float(a["price"]))[:5],
+            }
+        print(
+            f"[mispricing] ⚠ REST contradicts {token_id[:20]}... "
+            f"WS ask={ws_ask_price:.3f}/bid={ws_best_bid:.3f} "
+            f"REST ask={rest_ask:.3f}/bid={rest_bid:.3f} — cache refreshed"
+        )
+
+
 def _run_detection(token_id: str, asks: list, bids: list) -> None:
     """Run sandwich / mispricing / spread detection on a fresh book state."""
     if not bids or not asks:
@@ -226,22 +315,69 @@ def _run_detection(token_id: str, asks: list, bids: list) -> None:
 
     # Mispricing detection — require min bid depth (USDC) to filter phantom/spoof bids
     bid_depth_usdc = best_bid * best_bid_size
-    if (
-        best_bid > 0.05
-        and ask_size > 0
-        and ask_price < best_bid * CLOB_MISPRICING_BID_RATIO
-        and ask_price < best_bid - CLOB_MISPRICING_MIN_SPREAD
-        and bid_depth_usdc >= CLOB_MISPRICING_MIN_BID_DEPTH
-    ):
+    global _det_calls_lite, _det_calls_full, _det_bid_ok, _det_ask_ok, _det_ratio_ok, _det_spread_ok, _det_depth_ok
+    global _det_best_spread_pct, _det_worst_spread_pct, _det_best_depth, _last_funnel_log
+    if token_id in _lite_tokens:
+        _det_calls_lite += 1
+    else:
+        _det_calls_full += 1
+    spread_pct = (best_bid - ask_price) / best_bid if best_bid > 0 else -1.0
+    if spread_pct > _det_best_spread_pct:
+        _det_best_spread_pct = spread_pct
+    if spread_pct < _det_worst_spread_pct:
+        _det_worst_spread_pct = spread_pct
+
+    bid_cond   = best_bid > 0.05
+    ask_cond   = bid_cond and ask_size > 0
+    ratio_cond = ask_cond and ask_price < best_bid * CLOB_MISPRICING_BID_RATIO
+    spread_cond = ratio_cond and ask_price < best_bid - CLOB_MISPRICING_MIN_SPREAD
+    depth_cond  = spread_cond and bid_depth_usdc >= CLOB_MISPRICING_MIN_BID_DEPTH
+
+    if bid_cond:   _det_bid_ok    += 1
+    if ask_cond:   _det_ask_ok    += 1
+    if ratio_cond: _det_ratio_ok  += 1
+    if spread_cond:
+        _det_spread_ok += 1
+        if bid_depth_usdc > _det_best_depth:
+            _det_best_depth = bid_depth_usdc
+
+    if depth_cond:
+        _det_depth_ok += 1
         now = time.monotonic()
         if now - _mispricing_cooldown.get(token_id, 0.0) >= _MISPRICING_COOLDOWN_S:
             _mispricing_cooldown[token_id] = now
-            _mispricing_queue.put_nowait({
-                "token_id":  token_id,
-                "ask_price": ask_price,
-                "ask_size":  ask_size,
-                "best_bid":  best_bid,
-            })
+            # REST validation before firing: WS lite cache can drift during
+            # reconnects, so confirm with a fresh REST /book snapshot.
+            try:
+                asyncio.get_running_loop().create_task(
+                    _validate_and_queue(token_id, ask_price, ask_size, best_bid)
+                )
+            except RuntimeError:
+                # Not in an async context — fall back to direct queue (shouldn't happen in prod)
+                _mispricing_queue.put_nowait({
+                    "token_id":  token_id,
+                    "ask_price": ask_price,
+                    "ask_size":  ask_size,
+                    "best_bid":  best_bid,
+                })
+
+    now_ = time.monotonic()
+    total_calls = _det_calls_lite + _det_calls_full
+    if now_ - _last_funnel_log >= _HEARTBEAT_SECS and total_calls > 0:
+        _last_funnel_log = now_
+        print(
+            f"[mispricing] 🔬 funnel(30s): lite={_det_calls_lite} full={_det_calls_full} "
+            f"bid>0.05={_det_bid_ok} ask>0={_det_ask_ok} "
+            f"ratio<{CLOB_MISPRICING_BID_RATIO:.2f}={_det_ratio_ok} "
+            f"spread>{CLOB_MISPRICING_MIN_SPREAD:.2f}={_det_spread_ok} "
+            f"depth>={CLOB_MISPRICING_MIN_BID_DEPTH:.0f}={_det_depth_ok} "
+            f"| spread_pct range=[{_det_worst_spread_pct*100:.1f}%, {_det_best_spread_pct*100:.1f}%] "
+            f"| max depth near-miss={_det_best_depth:.2f} USDC"
+        )
+        _det_calls_lite = _det_calls_full = _det_bid_ok = _det_ask_ok = _det_ratio_ok = _det_spread_ok = _det_depth_ok = 0
+        _det_best_spread_pct = -999.0
+        _det_worst_spread_pct = 999.0
+        _det_best_depth = 0.0
 
     # --- SANDWICH ARB (disabled) -------------------------------------------
     # if ask_price <= MAKER_SANDWICH_MAX_ASK and best_bid >= MAKER_SANDWICH_MIN_BID
@@ -253,28 +389,21 @@ def _run_detection(token_id: str, asks: list, bids: list) -> None:
 def _store_book(token_id: str, asks: list, bids: list) -> None:
     """Replace cached book, recompute stale asks, trigger detection."""
     if token_id in _lite_tokens:
-        # Find highest bid and its size (real depth, not synthetic)
-        if bids:
-            top_bid = max(bids, key=lambda b: float(b["price"]))
-            best_bid      = float(top_bid["price"])
-            best_bid_size = float(top_bid.get("size", 0))
-        else:
-            best_bid = 0.0
-            best_bid_size = 0.0
+        sorted_bids = sorted(bids, key=lambda b: float(b["price"]), reverse=True)[:5]
         sorted_asks = sorted(asks, key=lambda a: float(a["price"]))[:5]
         _price_signals[token_id] = {
-            "best_bid":      best_bid,
-            "best_bid_size": best_bid_size,
-            "asks":          sorted_asks,
+            "bids": sorted_bids,
+            "asks": sorted_asks,
         }
-        if sorted_asks and best_bid > 0.05:
-            _run_detection(token_id, sorted_asks, [{"price": str(best_bid), "size": str(best_bid_size)}])
+        if sorted_asks and sorted_bids and float(sorted_bids[0]["price"]) > 0.05:
+            _run_detection(token_id, sorted_asks, sorted_bids)
         return
 
-    global _book_update_count
+    global _book_update_count, _last_book_log
     _book_update_count += 1
-    if _book_update_count % _BOOK_LOG_INTERVAL == 0:
-        # Show distribution: how many books have high bids / low asks
+    now = time.monotonic()
+    if now - _last_book_log >= _HEARTBEAT_SECS:
+        _last_book_log = now
         high_bids = sum(1 for b in _books.values() if b["bids"] and float(b["bids"][0]["price"]) >= 0.70)
         low_asks  = sum(1 for b in _books.values() if b["asks"] and float(min(b["asks"], key=lambda a: float(a["price"]))["price"]) <= 0.30)
         crossed   = sum(1 for b in _books.values() if b["bids"] and b["asks"] and float(b["bids"][0]["price"]) >= 0.80 and float(min(b["asks"], key=lambda a: float(a["price"]))["price"]) <= 0.20)
@@ -285,13 +414,13 @@ def _store_book(token_id: str, asks: list, bids: list) -> None:
     _books[token_id] = {"asks": sorted_asks, "bids": sorted_bids}
     _stale[token_id] = [a for a in sorted_asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE]
 
-    # Bid watcher
+    # Bid watcher — compare against best bid, i.e. sorted_bids[0]
     if token_id in _bid_watchers:
         min_bid, event = _bid_watchers[token_id]
-        if not event.is_set() and bids and float(bids[0]["price"]) >= min_bid:
+        if not event.is_set() and sorted_bids and float(sorted_bids[0]["price"]) >= min_bid:
             event.set()
 
-    _run_detection(token_id, asks, bids)
+    _run_detection(token_id, sorted_asks, sorted_bids)
 
 
 def _apply_side_update(token_id: str, side: str, updates: list[dict]) -> None:
@@ -304,37 +433,23 @@ def _apply_side_update(token_id: str, side: str, updates: list[dict]) -> None:
         signal = _price_signals.get(token_id)
         if signal is None:
             return  # No snapshot yet
+        level_map = {e["price"]: e for e in signal[side]}
+        for entry in updates:
+            price = entry.get("price", "")
+            if not price:
+                continue
+            if float(entry.get("size", 0)) == 0:
+                level_map.pop(price, None)
+            else:
+                level_map[price] = entry
         if side == "bids":
-            for entry in updates:
-                new_price = float(entry.get("price", 0))
-                new_size  = float(entry.get("size", 0))
-                if new_size > 0 and new_price > signal["best_bid"]:
-                    signal["best_bid"]      = new_price
-                    signal["best_bid_size"] = new_size
-                elif new_size > 0 and new_price == signal["best_bid"]:
-                    signal["best_bid_size"] = new_size  # depth update at same price
-                elif new_size == 0 and new_price == signal["best_bid"]:
-                    # Top bid removed — we don't know the next bid, reset size to 0
-                    # (conservative: depth filter will reject until next snapshot)
-                    signal["best_bid_size"] = 0.0
+            signal["bids"] = sorted(level_map.values(), key=lambda b: float(b["price"]), reverse=True)[:5]
         else:
-            ask_map = {a["price"]: a for a in signal["asks"]}
-            for entry in updates:
-                price = entry.get("price", "")
-                if not price:
-                    continue
-                if float(entry.get("size", 0)) == 0:
-                    ask_map.pop(price, None)
-                else:
-                    ask_map[price] = entry
-            signal["asks"] = sorted(ask_map.values(), key=lambda a: float(a["price"]))[:5]
+            signal["asks"] = sorted(level_map.values(), key=lambda a: float(a["price"]))[:5]
+        bids = signal["bids"]
         asks = signal["asks"]
-        if asks and signal["best_bid"] > 0.05:
-            _run_detection(
-                token_id,
-                asks,
-                [{"price": str(signal["best_bid"]), "size": str(signal["best_bid_size"])}],
-            )
+        if asks and bids and float(bids[0]["price"]) > 0.05:
+            _run_detection(token_id, asks, bids)
         return
 
     book = _books.get(token_id)
@@ -351,9 +466,11 @@ def _apply_side_update(token_id: str, side: str, updates: list[dict]) -> None:
         else:
             level_map[price] = entry
 
-    global _book_update_count
+    global _book_update_count, _last_book_log
     _book_update_count += 1
-    if _book_update_count % _BOOK_LOG_INTERVAL == 0:
+    now = time.monotonic()
+    if now - _last_book_log >= _HEARTBEAT_SECS:
+        _last_book_log = now
         print(f"[arb_ws] 📊 {_book_update_count} book updates | {len(_books)} books in memory")
 
     if side == "bids":
@@ -385,9 +502,11 @@ def _handle_message(msg: dict | list) -> None:
     if not isinstance(msg, dict):
         return
 
-    global _total_messages
+    global _total_messages, _last_msg_log
     _total_messages += 1
-    if _total_messages % _MSG_LOG_INTERVAL == 0:
+    now = time.monotonic()
+    if now - _last_msg_log >= _HEARTBEAT_SECS:
+        _last_msg_log = now
         print(f"[arb_ws] 📨 {_total_messages} msgs | books: {len(_books)}")
 
     # --- Market closure — signal waiting scanners ---
@@ -554,13 +673,70 @@ async def _run_orderbook_ws() -> None:
 _subscribed_tokens: set[str] = set()
 
 
+async def _audit_lite_state_vs_rest(interval_s: int = 180, sample_size: int = 20) -> None:
+    """
+    Periodically sample _price_signals and compare to REST /book for the same tokens.
+    Logs divergence count every interval. If systematic divergence, our lite cache is lying.
+    """
+    await asyncio.sleep(120)  # wait for subscriptions to warm up
+    loop = asyncio.get_event_loop()
+
+    def _fetch_book(token_id: str) -> dict | None:
+        try:
+            url = f"https://clob.polymarket.com/book?token_id={token_id}"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.loads(r.read())
+        except Exception:
+            return None
+
+    while True:
+        try:
+            tokens = list(_price_signals.keys())
+            print(f"[audit] tick — _price_signals has {len(tokens)} tokens")
+            if len(tokens) < sample_size:
+                await asyncio.sleep(interval_s)
+                continue
+            sample = random.sample(tokens, sample_size)
+
+            divergences = []
+            for tid in sample:
+                sig = _price_signals.get(tid)
+                if not sig:
+                    continue
+                ws_bids_list = sig.get("bids", [])
+                ws_bid = float(ws_bids_list[0]["price"]) if ws_bids_list else 0.0
+                ws_asks = sig.get("asks", [])
+                ws_ask = float(ws_asks[0]["price"]) if ws_asks else 0.0
+
+                data = await loop.run_in_executor(None, _fetch_book, tid)
+                if not data:
+                    continue
+                bids = data.get("bids", [])
+                asks = data.get("asks", [])
+                rest_bid = max((float(b["price"]) for b in bids if float(b.get("size", 0)) > 0), default=0.0)
+                rest_ask = min((float(a["price"]) for a in asks if float(a.get("size", 0)) > 0), default=0.0)
+
+                if abs(ws_bid - rest_bid) > 0.005 or abs(ws_ask - rest_ask) > 0.005:
+                    divergences.append((tid, ws_bid, ws_ask, rest_bid, rest_ask))
+
+            print(f"[audit] sampled {sample_size} lite tokens: {len(divergences)} divergent (|Δ|>0.5¢)")
+            for tid, wb, wa, rb, ra in divergences[:5]:
+                print(f"[audit]   {tid[:20]}... WS=[{wb:.3f}/{wa:.3f}] REST=[{rb:.3f}/{ra:.3f}]")
+        except Exception as e:
+            print(f"[audit] error: {e}")
+        await asyncio.sleep(interval_s)
+
+
 async def run_clob_ws() -> None:
     """
     Run both WS connections concurrently:
     - Market status WS (closures)
     - Orderbook WS (book updates for sandwich/mispricing detection)
+    - Audit loop: periodically compare internal state to REST
     """
     await asyncio.gather(
         _run_market_status_ws(),
         _run_orderbook_ws(),
+        _audit_lite_state_vs_rest(),
     )

@@ -211,54 +211,44 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
             return
 
         tokens = market.get("tokens", [])
+        winning_token = None
         if not tokens:
-            # CLOB returned empty tokens — fall back to Gamma API
+            # CLOB returned empty tokens — fall back to Gamma API just to resolve token_id,
+            # then fall through to the standard fast/slow path below (don't return early).
             try:
                 async with session.get(
                     f"https://gamma-api.polymarket.com/markets",
                     params={"clob_token_ids": condition_id},
                 ) as gresp:
                     gdata = await gresp.json()
-                if gdata and isinstance(gdata, list):
-                    gtokens = gdata[0].get("clobTokenIds") or []
-                    outcomes = gdata[0].get("outcomes") or []
-                    question = gdata[0].get("question", condition_id[:20])
-                    if winner_index < len(gtokens):
-                        token_id = gtokens[winner_index]
-                        winner   = outcomes[winner_index] if winner_index < len(outcomes) else f"outcome_{winner_index}"
-                        print(f"[arb] 🔄 Gamma fallback — token_id found ({condition_id[:14]}…)")
-                        # Jump directly to subscribe + scan
-                        await subscribe_orderbook(token_id)
-                        closed_event = get_closed_event(condition_id)
-                        book = get_cached_book(token_id)
-                        if book is None:
-                            async with session.get(f"{CLOB_API}/book", params={"token_id": token_id}) as resp:
-                                data = await resp.json()
-                                book = data if resp.status == 200 and "asks" in data else None
-                        stale = get_cached_stale(token_id) or (book and _find_stale(book))
-                        if stale:
-                            await _sweep(stale, token_id, question, winner, condition_id, session)
-                        else:
-                            print(f"[arb] Gamma fallback: no stale asks | {condition_id[:14]}…")
-                        return
-                    else:
-                        print(f"[arb] Gamma fallback: winner_index {winner_index} out of range ({condition_id[:14]}…)")
-                        return
-                else:
-                    print(f"[arb] Gamma fallback: no data ({condition_id[:14]}…)")
-                    return
             except Exception as e:
                 print(f"[arb] Gamma fallback failed ({condition_id[:14]}…): {e}")
                 return
 
-        if winner_index >= len(tokens):
-            print(f"[arb] winner_index {winner_index} out of range (tokens={len(tokens)}) — {condition_id[:14]}…")
-            return
+            if not (gdata and isinstance(gdata, list)):
+                print(f"[arb] Gamma fallback: no data ({condition_id[:14]}…)")
+                return
 
-        winning_token = tokens[winner_index]
-        token_id      = winning_token.get("token_id")
-        winner        = winning_token.get("outcome", f"outcome_{winner_index}")
-        question      = market.get("question", condition_id[:20])
+            gtokens = gdata[0].get("clobTokenIds") or []
+            outcomes = gdata[0].get("outcomes") or []
+            question = gdata[0].get("question", condition_id[:20])
+            if winner_index >= len(gtokens):
+                print(f"[arb] Gamma fallback: winner_index {winner_index} out of range ({condition_id[:14]}…)")
+                return
+
+            token_id = gtokens[winner_index]
+            winner   = outcomes[winner_index] if winner_index < len(outcomes) else f"outcome_{winner_index}"
+            # winning_token stays None — "winner" flag check below is skipped for Gamma path.
+            print(f"[arb] 🔄 Gamma fallback — token_id found ({condition_id[:14]}…)")
+        else:
+            if winner_index >= len(tokens):
+                print(f"[arb] winner_index {winner_index} out of range (tokens={len(tokens)}) — {condition_id[:14]}…")
+                return
+
+            winning_token = tokens[winner_index]
+            token_id      = winning_token.get("token_id")
+            winner        = winning_token.get("outcome", f"outcome_{winner_index}")
+            question      = market.get("question", condition_id[:20])
 
     if not token_id:
         print(f"[arb] no token_id for winner_index={winner_index} — {condition_id[:14]}…")
@@ -302,8 +292,9 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
 
     if stale:
         already_closed = bool(market and market.get("closed", False))
-        # If CLOB already closed, cross-check winner flag before buying
-        if already_closed and not winning_token.get("winner", False):
+        # If CLOB already closed, cross-check winner flag before buying.
+        # Gamma-fallback path has winning_token=None — skip check (we trust on-chain).
+        if already_closed and winning_token is not None and not winning_token.get("winner", False):
             print(f"[arb] ⚠️  fast path winner flag mismatch — skipping {condition_id[:14]}…")
             return
         label = "CLOSED" if already_closed else "PRE-CLOSE ⚡"
@@ -357,14 +348,17 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
             print(f"[arb] market never closed on CLOB after 3min — skipping {condition_id[:14]}…")
             return
 
-    # Safety check: verify CLOB winner flag now that market is officially closed
+    # Safety check: verify CLOB winner flag now that market is officially closed.
+    # NegRisk markets sometimes report tokens=[] even after closed=true — in that case,
+    # trust the on-chain payoutNumerators (which we already used to pick winner_index).
     tokens = market.get("tokens", [])
-    if winner_index >= len(tokens):
-        return
-    winning_token = tokens[winner_index]
-    if not winning_token.get("winner", False):
-        print(f"[arb] ⚠️  on-chain index {winner_index} != CLOB winner flag — skipping {condition_id[:14]}…")
-        return
+    if tokens:
+        if winner_index >= len(tokens):
+            return
+        winning_token = tokens[winner_index]
+        if not winning_token.get("winner", False):
+            print(f"[arb] ⚠️  on-chain index {winner_index} != CLOB winner flag — skipping {condition_id[:14]}…")
+            return
 
     # Fresh orderbook — use WS cache or REST
     book = get_cached_book(token_id)
