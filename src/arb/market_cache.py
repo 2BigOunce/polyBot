@@ -1,16 +1,17 @@
 """
 Pre-caches active market metadata (token_ids, question, outcome names).
 
-Refreshes every 30 minutes in the background.
+Refreshes every REFRESH_INTERVAL seconds (see below) in the background.
 Used by arb_scanner to skip the market HTTP fetch at resolution time (~50ms saved).
 
 Cache hit  → token_id available instantly, no HTTP call needed.
 Cache miss → falls back to HTTP fetch (no worse than current behavior).
 
-WS orderbook subscriptions are NOT done here — arb_scanner subscribes the
-winning token immediately at resolution time. Stale orders persist for hours,
-so the ~1s WS fill delay is irrelevant. Pre-subscribing 27k+ tokens was
-causing RAM saturation (628MB+ with swap thrashing).
+Also registers tokens closing within LITE_TRACK_DAYS for lightweight mispricing
+monitoring via clob_ws.subscribe_mispricing_bulk. Non-lite tokens are not
+pre-subscribed — arb_scanner subscribes the winning token on resolution
+(stale orders persist for hours, so the ~1s WS fill delay is irrelevant).
+Pre-subscribing 27k+ tokens previously caused RAM saturation (628MB+ w/ swap thrash).
 """
 
 import asyncio
@@ -23,7 +24,7 @@ from src.arb.clob_ws import cleanup_lite_tokens, subscribe_mispricing_bulk
 
 GAMMA_API        = "https://gamma-api.polymarket.com"
 CLOB_API         = "https://clob.polymarket.com"
-REFRESH_INTERVAL = 600  # 10 minutes
+REFRESH_INTERVAL = 600  # seconds (10 minutes)
 LITE_TRACK_DAYS  = 2    # only lite-track markets closing within this many days
 
 
@@ -59,7 +60,6 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
     """
     count  = 0
     offset = 0
-    all_token_ids: list[str] = []   # all active tokens (for cleanup)
     lite_token_ids: list[str] = []  # only markets closing soon (for lite WS)
 
     while True:
@@ -115,7 +115,6 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
                 "tokens":   cached_tokens,
                 "question": m.get("question", cid[:20]),
             }
-            all_token_ids.extend(t for t in token_ids if t)
             if _closes_soon(m):
                 lite_token_ids.extend(t for t in token_ids if t)
             count += 1
@@ -125,7 +124,7 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
         offset += 100
         await asyncio.sleep(0.2)
 
-    if all_token_ids:
+    if lite_token_ids:
         cleanup_lite_tokens(set(lite_token_ids))
         subscribe_mispricing_bulk(lite_token_ids)
         print(f"[market_cache] lite tracking: {len(lite_token_ids)} tokens (closes within {LITE_TRACK_DAYS}d)")
@@ -133,7 +132,7 @@ async def _refresh(session: aiohttp.ClientSession) -> int:
 
 
 async def run_market_cache() -> None:
-    """Background task: refresh the market cache every 30 minutes."""
+    """Background task: refresh the market cache every REFRESH_INTERVAL seconds."""
     async with aiohttp.ClientSession() as session:
         while True:
             n = await _refresh(session)

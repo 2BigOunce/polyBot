@@ -39,6 +39,11 @@ _books: dict[str, dict] = {}
 # token_id → pre-computed stale asks (filtered + sorted, ready to use at resolution)
 _stale: dict[str, list[dict]] = {}
 
+# token_id → list of pending (side, updates) deltas received before the first snapshot.
+# Capped per-token to avoid unbounded growth if a subscription never returns a snapshot.
+_pending_deltas: dict[str, list[tuple[str, list[dict]]]] = {}
+_PENDING_DELTAS_CAP = 50
+
 # Queue of token_ids waiting to be subscribed on the WS
 _subscription_queue: asyncio.Queue[str] = asyncio.Queue()
 
@@ -395,6 +400,14 @@ def _store_book(token_id: str, asks: list, bids: list) -> None:
             "bids": sorted_bids,
             "asks": sorted_asks,
         }
+        # Replay buffered deltas received before this snapshot
+        pending = _pending_deltas.pop(token_id, None)
+        if pending:
+            for pside, pupdates in pending:
+                _apply_side_update(token_id, pside, pupdates)
+            sig = _price_signals.get(token_id, {})
+            sorted_bids = sig.get("bids", sorted_bids)
+            sorted_asks = sig.get("asks", sorted_asks)
         if sorted_asks and sorted_bids and float(sorted_bids[0]["price"]) > 0.05:
             _run_detection(token_id, sorted_asks, sorted_bids)
         return
@@ -414,6 +427,12 @@ def _store_book(token_id: str, asks: list, bids: list) -> None:
     _books[token_id] = {"asks": sorted_asks, "bids": sorted_bids}
     _stale[token_id] = [a for a in sorted_asks if float(a.get("price", 1.0)) <= ARB_MAX_STALE_PRICE]
 
+    # Replay any deltas that arrived before this snapshot.
+    pending = _pending_deltas.pop(token_id, None)
+    if pending:
+        for pside, pupdates in pending:
+            _apply_side_update(token_id, pside, pupdates)
+
     # Bid watcher — compare against best bid, i.e. sorted_bids[0]
     if token_id in _bid_watchers:
         min_bid, event = _bid_watchers[token_id]
@@ -432,7 +451,11 @@ def _apply_side_update(token_id: str, side: str, updates: list[dict]) -> None:
     if token_id in _lite_tokens:
         signal = _price_signals.get(token_id)
         if signal is None:
-            return  # No snapshot yet
+            # Buffer until the first snapshot arrives for this lite token.
+            buf = _pending_deltas.setdefault(token_id, [])
+            if len(buf) < _PENDING_DELTAS_CAP:
+                buf.append((side, updates))
+            return
         level_map = {e["price"]: e for e in signal[side]}
         for entry in updates:
             price = entry.get("price", "")
@@ -454,7 +477,11 @@ def _apply_side_update(token_id: str, side: str, updates: list[dict]) -> None:
 
     book = _books.get(token_id)
     if book is None:
-        return  # No snapshot yet — store first, then apply deltas
+        # No snapshot yet — buffer this delta and apply when the snapshot arrives.
+        buf = _pending_deltas.setdefault(token_id, [])
+        if len(buf) < _PENDING_DELTAS_CAP:
+            buf.append((side, updates))
+        return
 
     level_map = {e["price"]: e for e in book[side]}
     for entry in updates:
@@ -540,11 +567,15 @@ def _handle_message(msg: dict | list) -> None:
     # --- price_changes: contains asset_id + price only (no side/size) — skip delta,
     #     rely on the full book message that follows in the same burst ---
 
-    # --- Best bid/ask tick: re-detect from cached book ---
+    # --- Best bid/ask tick: re-detect from cached book (full or lite) ---
     if asset_id and ("best_bid" in msg or "best_ask" in msg):
         book = _books.get(asset_id)
         if book:
             _run_detection(asset_id, book["asks"], book["bids"])
+            return
+        signal = _price_signals.get(asset_id)
+        if signal:
+            _run_detection(asset_id, signal.get("asks", []), signal.get("bids", []))
         return
 
 
@@ -626,9 +657,12 @@ async def _run_orderbook_ws() -> None:
 
     async def _restart_shards() -> None:
         nonlocal _shard_tasks
-        # Cancel existing shards
+        # Cancel existing shards and wait for them to actually stop so the
+        # new shards don't race against old ones feeding _books/_price_signals.
         for t in _shard_tasks:
             t.cancel()
+        if _shard_tasks:
+            await asyncio.gather(*_shard_tasks, return_exceptions=True)
         _shard_tasks = []
         tokens = list(_subscribed_tokens)
         chunks = [tokens[i:i + _WS_CHUNK_SIZE] for i in range(0, len(tokens), _WS_CHUNK_SIZE)]
@@ -679,7 +713,7 @@ async def _audit_lite_state_vs_rest(interval_s: int = 180, sample_size: int = 20
     Logs divergence count every interval. If systematic divergence, our lite cache is lying.
     """
     await asyncio.sleep(120)  # wait for subscriptions to warm up
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _fetch_book(token_id: str) -> dict | None:
         try:

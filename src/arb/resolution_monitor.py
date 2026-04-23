@@ -139,8 +139,8 @@ async def run_resolution_monitor():
         try:
             async with websockets.connect(
                 RPC_URL,
-                ping_interval=10,
-                ping_timeout=5,
+                ping_interval=20,
+                ping_timeout=15,
                 open_timeout=15,
             ) as ws:
                 retry_delay = 5

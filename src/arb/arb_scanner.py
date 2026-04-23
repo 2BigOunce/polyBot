@@ -39,8 +39,20 @@ def _get_bot() -> Bot:
 CLOB_API = "https://clob.polymarket.com"
 
 # Deduplication: avoid scanning the same conditionId twice
-# (NegRisk markets can fire multiple ConditionResolution events rapidly)
+# (NegRisk markets can fire multiple ConditionResolution events rapidly).
+# Bounded to prevent unbounded growth over long uptimes — oldest entries
+# drop out via FIFO eviction in _mark_scanned().
+from collections import deque
 _scanned: set[str] = set()
+_scanned_order: deque[str] = deque()
+_SCANNED_MAX = 10_000
+
+
+def _mark_scanned(condition_id: str) -> None:
+    _scanned.add(condition_id)
+    _scanned_order.append(condition_id)
+    while len(_scanned_order) > _SCANNED_MAX:
+        _scanned.discard(_scanned_order.popleft())
 
 _session: aiohttp.ClientSession | None = None
 
@@ -170,7 +182,7 @@ async def scan_resolved_market(condition_id: str, winner_index: int) -> None:
     """
     if condition_id in _scanned:
         return
-    _scanned.add(condition_id)
+    _mark_scanned(condition_id)
 
     session = _get_session()
     closed_event = get_closed_event(condition_id)
