@@ -30,6 +30,13 @@ from config.settings import (
 
 CLOB_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
+# High-conviction threshold: if absolute spread (best_bid - ask_price) is this
+# wide or wider, skip REST validation and queue immediately. Such a crossed book
+# is statistically extremely unlikely to be a stale-cache false positive, and
+# the ~350ms we save is the difference between catching the stale ask and
+# losing it to a faster taker.
+HIGH_CONVICTION_SPREAD = 0.25
+
 # condition_id → asyncio.Event (set when CLOB confirms market is closed)
 _closed_events: dict[str, asyncio.Event] = {}
 
@@ -236,7 +243,7 @@ def get_lite_stale(token_id: str, max_price: float) -> list[dict] | None:
     return sorted(stale, key=lambda a: float(a["price"])) or None
 
 
-async def _validate_and_queue(token_id: str, ws_ask_price: float, ws_ask_size: float, ws_best_bid: float) -> None:
+async def _validate_and_queue(token_id: str, ws_ask_price: float, ws_ask_size: float, ws_best_bid: float, t_detect: float) -> None:
     """
     Re-fetch /book via REST and confirm the crossed state before queuing.
     If REST confirms: queue with REST values.
@@ -250,11 +257,13 @@ async def _validate_and_queue(token_id: str, ws_ask_price: float, ws_ask_size: f
         with urllib.request.urlopen(req, timeout=3) as r:
             return json.loads(r.read())
 
+    t_rest_start = time.monotonic()
     try:
         data = await asyncio.wait_for(loop.run_in_executor(None, _fetch), timeout=4)
     except Exception as e:
         print(f"[mispricing] REST validation failed {token_id[:20]}: {e}")
         return
+    t_rest_done = time.monotonic()
 
     rest_bids = data.get("bids", []) or []
     rest_asks = data.get("asks", []) or []
@@ -286,13 +295,21 @@ async def _validate_and_queue(token_id: str, ws_ask_price: float, ws_ask_size: f
     )
 
     if still_crossed:
+        t_queued = time.monotonic()
         _mispricing_queue.put_nowait({
             "token_id":  token_id,
             "ask_price": rest_ask,
             "ask_size":  rest_ask_size,
             "best_bid":  rest_bid,
+            "t_detect":  t_detect,
+            "t_rest_start": t_rest_start,
+            "t_rest_done":  t_rest_done,
+            "t_queued":     t_queued,
         })
-        print(f"[mispricing] ✅ REST confirmed {token_id[:20]}... ask={rest_ask:.3f} bid={rest_bid:.3f}")
+        print(
+            f"[mispricing] ✅ REST confirmed {token_id[:20]}... ask={rest_ask:.3f} bid={rest_bid:.3f} "
+            f"| ⏱ detect→rest={1000*(t_rest_start-t_detect):.0f}ms rest={1000*(t_rest_done-t_rest_start):.0f}ms"
+        )
     else:
         # WS lied — refresh cache with REST truth so next detection is accurate
         if token_id in _lite_tokens:
@@ -348,23 +365,41 @@ def _run_detection(token_id: str, asks: list, bids: list) -> None:
 
     if depth_cond:
         _det_depth_ok += 1
-        now = time.monotonic()
-        if now - _mispricing_cooldown.get(token_id, 0.0) >= _MISPRICING_COOLDOWN_S:
-            _mispricing_cooldown[token_id] = now
-            # REST validation before firing: WS lite cache can drift during
-            # reconnects, so confirm with a fresh REST /book snapshot.
-            try:
-                asyncio.get_running_loop().create_task(
-                    _validate_and_queue(token_id, ask_price, ask_size, best_bid)
-                )
-            except RuntimeError:
-                # Not in an async context — fall back to direct queue (shouldn't happen in prod)
+        t_detect = time.monotonic()
+        if t_detect - _mispricing_cooldown.get(token_id, 0.0) >= _MISPRICING_COOLDOWN_S:
+            _mispricing_cooldown[token_id] = t_detect
+            abs_spread = best_bid - ask_price
+            if abs_spread >= HIGH_CONVICTION_SPREAD:
+                # Skip REST — such a wide spread is almost certainly real,
+                # and the ~350ms REST costs is enough to lose the race.
+                t_queued = time.monotonic()
                 _mispricing_queue.put_nowait({
                     "token_id":  token_id,
                     "ask_price": ask_price,
                     "ask_size":  ask_size,
                     "best_bid":  best_bid,
+                    "t_detect":  t_detect,
+                    "t_queued":  t_queued,
+                    "skipped_rest": True,
                 })
+                print(
+                    f"[mispricing] ⚡ high-conviction queue (spread={abs_spread:.3f} ≥ {HIGH_CONVICTION_SPREAD}) "
+                    f"{token_id[:20]}... ask={ask_price:.3f} bid={best_bid:.3f} — REST skipped"
+                )
+            else:
+                # Marginal detection — confirm via REST to filter stale-cache noise.
+                try:
+                    asyncio.get_running_loop().create_task(
+                        _validate_and_queue(token_id, ask_price, ask_size, best_bid, t_detect)
+                    )
+                except RuntimeError:
+                    _mispricing_queue.put_nowait({
+                        "token_id":  token_id,
+                        "ask_price": ask_price,
+                        "ask_size":  ask_size,
+                        "best_bid":  best_bid,
+                        "t_detect":  t_detect,
+                    })
 
     now_ = time.monotonic()
     total_calls = _det_calls_lite + _det_calls_full

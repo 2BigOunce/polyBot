@@ -14,6 +14,7 @@ Thresholds (configurable via .env):
 """
 
 import asyncio
+import time as _time
 
 from telegram import Bot
 
@@ -46,11 +47,18 @@ async def run_clob_mispricing() -> None:
 
     while True:
         event = await queue.get()
+        t_consume = _time.monotonic()
 
         token_id   = event["token_id"]
         ask_price  = event["ask_price"]
         ask_size   = event["ask_size"]
         best_bid   = event["best_bid"]
+        t_detect   = event.get("t_detect", t_consume)
+        t_queued   = event.get("t_queued", t_consume)
+        print(
+            f"[mispricing] ⏱ queue_wait={1000*(t_consume-t_queued):.0f}ms "
+            f"(total detect→consume={1000*(t_consume-t_detect):.0f}ms)"
+        )
 
         spread     = best_bid - ask_price
         spread_pct = spread / best_bid * 100
@@ -92,6 +100,7 @@ async def run_clob_mispricing() -> None:
                 ask_size=ask_size,
                 best_bid=best_bid,
                 max_trade_usdc=CLOB_MISPRICING_MAX_TRADE,
+                t_detect=t_detect,
             )
         except ImportError:
             print("[mispricing] executor not available — deploy src/trading/clob_mispricing_executor.py")
