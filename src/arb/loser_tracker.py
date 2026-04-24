@@ -54,7 +54,17 @@ async def _fetch_json(session: aiohttp.ClientSession, url: str, timeout_s: float
 async def _check_book_and_queue(
     session: aiohttp.ClientSession, wallet: str, token_id: str, trade: dict
 ) -> None:
-    """Fetch /book for token_id. If crossed, queue a mispricing event."""
+    """
+    Immediate check: fetch /book for token_id. If crossed, queue a mispricing
+    event. Also subscribe this token to lite WS tracking so any SUBSEQUENT
+    stale ask from the same (or another) loser on this token is caught
+    instantly via WS deltas, no REST needed.
+    """
+    # Subscribe to lite tracking for future deltas on this token
+    from src.arb.clob_ws import subscribe_lite
+    if subscribe_lite(token_id):
+        print(f"[loser_tracker] + lite sub {token_id[:16]}... (seen via {wallet[:10]})")
+
     url = f"{CLOB_API}/book?token_id={token_id}"
     data = await _fetch_json(session, url, timeout_s=2.5)
     if not data:
@@ -145,8 +155,14 @@ async def _poll_wallet(
 
 async def _bootstrap_seen(
     session: aiohttp.ClientSession, wallet: str
-) -> set[str]:
-    """Fetch recent trades once to pre-populate dedup — avoid firing alerts on old trades."""
+) -> tuple[set[str], set[str]]:
+    """
+    Fetch recent trades once to pre-populate dedup (avoid firing on history)
+    AND return the set of recent token_ids this wallet has been trading on.
+    The token set feeds preemptive lite subscriptions — so the VERY FIRST
+    future stale ask from this wallet is caught via WS deltas without waiting
+    for a new trade.
+    """
     url = f"{DATA_API}/activity?" + urllib.parse.urlencode({
         "user": wallet,
         "limit": "50",
@@ -155,13 +171,25 @@ async def _bootstrap_seen(
     try:
         trades = await _fetch_json(session, url, timeout_s=5.0)
     except Exception:
-        return set()
-    return {t["transactionHash"] for t in (trades or []) if t.get("transactionHash")}
+        return set(), set()
+    trades = trades or []
+    seen_tx = {t["transactionHash"] for t in trades if t.get("transactionHash")}
+    tokens  = {t["asset"] for t in trades if t.get("asset")}
+    return seen_tx, tokens
 
 
 async def _run_one(session: aiohttp.ClientSession, wallet: str) -> None:
-    seen_tx = await _bootstrap_seen(session, wallet)
-    print(f"[loser_tracker] watching {wallet} (bootstrap: {len(seen_tx)} seen tx)")
+    seen_tx, recent_tokens = await _bootstrap_seen(session, wallet)
+
+    # Preemptive WS lite subscription on tokens this loser frequents.
+    # Most will already be in lite tracking (market_cache covers active markets);
+    # only truly new ones trigger a queue add (one shard restart cycle coalesces them).
+    from src.arb.clob_ws import subscribe_lite
+    added = sum(1 for t in recent_tokens if subscribe_lite(t))
+
+    print(f"[loser_tracker] watching {wallet} "
+          f"(seen_tx={len(seen_tx)} tokens={len(recent_tokens)} newly_lite={added})")
+
     while True:
         try:
             await _poll_wallet(session, wallet, seen_tx)

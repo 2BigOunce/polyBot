@@ -204,6 +204,23 @@ async def subscribe_orderbook(token_id: str) -> None:
     _subscription_queue.put_nowait(token_id)
 
 
+def subscribe_lite(token_id: str) -> bool:
+    """
+    Register a token for lite tracking if not already tracked (in any mode).
+    Idempotent: returns False if already tracked (no queue action), True if newly added.
+    Use from loser_tracker — we only need lite-level state (top-5 asks/bids)
+    to detect crossed books. Avoid promoting to full tracking to keep shard
+    restart frequency low.
+    """
+    if not token_id:
+        return False
+    if token_id in _subscribed_tokens or token_id in _lite_tokens:
+        return False
+    _lite_tokens.add(token_id)
+    _subscription_queue.put_nowait(token_id)
+    return True
+
+
 def subscribe_orderbook_bulk(token_ids: list[str]) -> None:
     """
     Queue multiple token_ids for orderbook subscription without yielding.
