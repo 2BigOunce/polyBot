@@ -40,28 +40,35 @@ def _fetch(url: str, timeout: float = 15.0):
 
 
 def fetch_stats(wallet: str) -> dict | None:
+    # Fetch everything (TRADE + REDEEM) — REDEEM is cashing winning positions,
+    # effectively a sell. Ignoring it labels retail winners as losers.
     url = f"{DATA_API}/activity?" + urllib.parse.urlencode({
         "user": wallet,
         "limit": str(TRADE_LIMIT),
-        "type": "TRADE",
     })
     try:
-        trades = _fetch(url) or []
+        events = _fetch(url) or []
     except Exception as e:
         return {"wallet": wallet, "error": str(e)}
-    if not trades:
+    trades  = [e for e in events if e.get("type") == "TRADE"]
+    redeems = [e for e in events if e.get("type") == "REDEEM"]
+    if not trades and not redeems:
         return {"wallet": wallet, "n_trades": 0}
 
-    buy_usdc  = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "BUY")
-    sell_usdc = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "SELL")
-    sizes     = [float(t.get("usdcSize", 0) or 0) for t in trades]
-    markets   = {t.get("conditionId") or t.get("market") for t in trades if t.get("conditionId") or t.get("market")}
+    buy_usdc    = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "BUY")
+    sell_usdc   = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "SELL")
+    redeem_usdc = sum(float(r.get("usdcSize", 0) or 0) for r in redeems)
+    sizes       = [float(t.get("usdcSize", 0) or 0) for t in trades]
+    markets     = {t.get("conditionId") or t.get("market") for t in trades if t.get("conditionId") or t.get("market")}
 
     total_volume  = buy_usdc + sell_usdc
     n_trades      = len(trades)
+    n_redeems     = len(redeems)
     n_markets     = len(markets)
     median_size   = statistics.median(sizes) if sizes else 0.0
-    ratio         = (sell_usdc / buy_usdc) if buy_usdc > 0 else float("inf")
+    # Ratio includes REDEEM as effective sell
+    effective_out = sell_usdc + redeem_usdc
+    ratio         = (effective_out / buy_usdc) if buy_usdc > 0 else float("inf")
 
     # Bot-likeness: trade count × markets × volume-in-sweet-spot × small-median-size
     # Normalised to be roughly in [0, ~5] range for typical bots.
@@ -86,16 +93,23 @@ def fetch_stats(wallet: str) -> dict | None:
 
     bot_score = round(t_s * m_s * v_s * s_s, 3)
 
+    # is_loser_still: re-check with REDEEM-aware ratio. If ratio > 0.5 now,
+    # the wallet was a false positive (probably buy-and-hold retail winner).
+    is_loser_still = (ratio <= 0.5) if buy_usdc > 0 else False
+
     return {
-        "wallet":       wallet,
-        "n_trades":     n_trades,
-        "n_markets":    n_markets,
-        "buy_usdc":     round(buy_usdc, 2),
-        "sell_usdc":    round(sell_usdc, 2),
-        "total_volume": round(total_volume, 2),
-        "median_size":  round(median_size, 2),
-        "ratio_sb":     round(ratio, 3) if ratio != float("inf") else None,
-        "bot_score":    bot_score,
+        "wallet":        wallet,
+        "n_trades":      n_trades,
+        "n_redeems":     n_redeems,
+        "n_markets":     n_markets,
+        "buy_usdc":      round(buy_usdc, 2),
+        "sell_usdc":     round(sell_usdc, 2),
+        "redeem_usdc":   round(redeem_usdc, 2),
+        "total_volume":  round(total_volume, 2),
+        "median_size":   round(median_size, 2),
+        "ratio_sbr":     round(ratio, 3) if ratio != float("inf") else None,
+        "bot_score":     bot_score if is_loser_still else 0.0,
+        "still_loser":   "yes" if is_loser_still else "no",
     }
 
 
@@ -119,22 +133,26 @@ def main() -> None:
     results.sort(key=lambda r: r.get("bot_score", 0), reverse=True)
 
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
-        fieldnames = ["wallet", "bot_score", "n_trades", "n_markets", "total_volume",
-                      "buy_usdc", "sell_usdc", "median_size", "ratio_sb", "error"]
+        fieldnames = ["wallet", "still_loser", "bot_score", "n_trades", "n_redeems", "n_markets",
+                      "total_volume", "buy_usdc", "sell_usdc", "redeem_usdc", "median_size",
+                      "ratio_sbr", "error"]
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for row in results:
             writer.writerow(row)
 
     # Summary
-    scored    = [r for r in results if r.get("bot_score", 0) > 0]
-    high_bot  = [r for r in results if r.get("bot_score", 0) >= 1.0]
-    very_high = [r for r in results if r.get("bot_score", 0) >= 2.0]
+    still_losers = [r for r in results if r.get("still_loser") == "yes"]
+    false_pos    = [r for r in results if r.get("still_loser") == "no"]
+    scored       = [r for r in still_losers if r.get("bot_score", 0) > 0]
+    high_bot     = [r for r in still_losers if r.get("bot_score", 0) >= 1.0]
+    very_high    = [r for r in still_losers if r.get("bot_score", 0) >= 2.0]
     print(f"\nWritten: {OUTPUT_FILE}")
-    print(f"  total     : {len(results)}")
-    print(f"  with score: {len(scored)}")
-    print(f"  score >=1 : {len(high_bot)}  (likely defective bots)")
-    print(f"  score >=2 : {len(very_high)} (strong bot signature)")
+    print(f"  total          : {len(results)}")
+    print(f"  still losers   : {len(still_losers)} (ratio w/ REDEEM <= 0.5)")
+    print(f"  false positives: {len(false_pos)} (were retail winners, now excluded)")
+    print(f"  score >=1      : {len(high_bot)}  (likely defective bots)")
+    print(f"  score >=2      : {len(very_high)} (strong bot signature)")
     print()
     print("Top 10 candidates:")
     for r in results[:10]:

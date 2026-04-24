@@ -109,6 +109,7 @@ def parse_counterparties_for(tx_hash: str, wallet: str) -> set[str]:
 
 
 def fetch_recent_trades(wallet: str) -> list[dict]:
+    # Only TRADE events are useful for counterparty discovery
     url = f"{DATA_API}/activity?" + urllib.parse.urlencode({
         "user": wallet,
         "limit": str(LIMIT_TRADES_PER_WALLET),
@@ -121,31 +122,41 @@ def fetch_recent_trades(wallet: str) -> list[dict]:
 
 
 def classify(wallet: str) -> tuple[str, dict | None]:
+    """
+    Classify by (SELL+REDEEM)/BUY ratio. REDEEM is a direct on-chain payout
+    from the protocol when a winning position resolves — not a SELL on the
+    orderbook, but functionally equivalent (cashing in). Ignoring it causes
+    retail buy-and-hold winners to be misclassified as losers.
+    """
     wallet = wallet.lower()
     if len(wallet) != 42 or not wallet.startswith("0x"):
         return "invalid", None
     url = f"{DATA_API}/activity?" + urllib.parse.urlencode({
         "user": wallet,
         "limit": "500",
-        "type": "TRADE",
     })
     try:
-        trades = _fetch_json(url) or []
+        events = _fetch_json(url) or []
     except Exception:
         return "error", None
-    if not trades:
+    trades  = [e for e in events if e.get("type") == "TRADE"]
+    redeems = [e for e in events if e.get("type") == "REDEEM"]
+    if not trades and not redeems:
         return "nodata", None
-    buy  = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "BUY")
-    sell = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "SELL")
-    ratio = (sell / buy) if buy > 0 else float("inf")
-    n = len(trades)
+    buy      = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "BUY")
+    sell     = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "SELL")
+    redeem   = sum(float(r.get("usdcSize", 0) or 0) for r in redeems)
+    out      = sell + redeem
+    ratio    = (out / buy) if buy > 0 else float("inf")
+    n        = len(trades)
+    stats    = {"ratio": ratio, "n": n, "buy": buy, "sell": sell, "redeem": redeem}
     if n < MIN_TRADES_TO_CLASSIFY:
-        return "tooshort", {"ratio": ratio, "n": n, "buy": buy, "sell": sell}
+        return "tooshort", stats
     if ratio >= SNIPER_RATIO_MIN:
-        return "sniper", {"ratio": ratio, "n": n, "buy": buy, "sell": sell}
+        return "sniper", stats
     if ratio <= LOSER_RATIO_MAX:
-        return "loser", {"ratio": ratio, "n": n, "buy": buy, "sell": sell}
-    return "neutral", {"ratio": ratio, "n": n, "buy": buy, "sell": sell}
+        return "loser", stats
+    return "neutral", stats
 
 
 def process_wallets(wallets: list[str], seen_candidates: set[str]) -> set[str]:
@@ -192,10 +203,10 @@ def main() -> None:
             seen_all.add(cand)
             if code == "sniper":
                 new_snipers.add(cand)
-                print(f"    [+SNIPER] {cand} — ratio={stats['ratio']:.2f}x n={stats['n']} (buy={stats['buy']:.0f} sell={stats['sell']:.0f})")
+                print(f"    [+SNIPER] {cand} — ratio={stats['ratio']:.2f}x n={stats['n']} (buy={stats['buy']:.0f} sell+redeem={stats['sell']+stats['redeem']:.0f})")
             elif code == "loser":
                 new_losers.add(cand)
-                print(f"    [+LOSER]  {cand} — ratio={stats['ratio']:.2f}x n={stats['n']} (buy={stats['buy']:.0f} sell={stats['sell']:.0f})")
+                print(f"    [+LOSER]  {cand} — ratio={stats['ratio']:.2f}x n={stats['n']} (buy={stats['buy']:.0f} sell={stats['sell']:.0f} redeem={stats['redeem']:.0f})")
             time.sleep(0.1)
             if (i + 1) % 25 == 0:
                 print(f"    ... classified {i+1}/{len(candidates)}")

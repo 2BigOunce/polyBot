@@ -38,25 +38,31 @@ def classify(wallet: str) -> str:
         print(f"[SKIP]   {wallet} (not a valid address)")
         return "invalid"
 
+    # Fetch all activity (TRADE + REDEEM). Redeems = cashing in winning shares
+    # directly from the protocol after resolution; they're effective sells and
+    # must count in the ratio or retail winners get misclassified as losers.
     url = f"{DATA_API}/activity?" + urllib.parse.urlencode({
         "user": wallet,
         "limit": "500",
-        "type": "TRADE",
     })
     try:
-        trades = _fetch(url) or []
+        events = _fetch(url) or []
     except Exception as e:
         print(f"[ERROR]  {wallet} — {e}")
         return "error"
 
-    if not trades:
-        print(f"[NODATA] {wallet} — no TRADE activity")
+    trades = [e for e in events if e.get("type") == "TRADE"]
+    redeems = [e for e in events if e.get("type") == "REDEEM"]
+    if not trades and not redeems:
+        print(f"[NODATA] {wallet} — no activity")
         return "nodata"
 
-    buy_usdc  = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "BUY")
-    sell_usdc = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "SELL")
-    n         = len(trades)
-    ratio     = (sell_usdc / buy_usdc) if buy_usdc > 0 else float("inf")
+    buy_usdc    = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "BUY")
+    sell_usdc   = sum(float(t.get("usdcSize", 0) or 0) for t in trades if t.get("side") == "SELL")
+    redeem_usdc = sum(float(r.get("usdcSize", 0) or 0) for r in redeems)
+    effective_out = sell_usdc + redeem_usdc
+    n           = len(trades)
+    ratio       = (effective_out / buy_usdc) if buy_usdc > 0 else float("inf")
 
     markets: set[str] = set()
     for t in trades:
@@ -75,10 +81,11 @@ def classify(wallet: str) -> str:
         code    = "neutral"
 
     print(f"{verdict} {wallet}")
-    print(f"   trades : {n}")
+    print(f"   trades : {n} ({len(redeems)} redeems)")
     print(f"   buy    : {buy_usdc:>10,.0f} USDC")
     print(f"   sell   : {sell_usdc:>10,.0f} USDC")
-    print(f"   ratio  : {_fmt_ratio(ratio):>8s} (SELL/BUY)")
+    print(f"   redeem : {redeem_usdc:>10,.0f} USDC")
+    print(f"   ratio  : {_fmt_ratio(ratio):>8s} ((SELL+REDEEM)/BUY)")
     print(f"   markets: {len(markets)}")
     return code
 
