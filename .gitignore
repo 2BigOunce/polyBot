@@ -27,3 +27,4 @@ venv/
 # Watchlist outputs (wallet lists — local artefacts, rebuildable via scripts/expand_watchlist.py)
 watchlist_snipers.txt
 watchlist_losers.txt
+losers_enriched.csv
