@@ -33,17 +33,16 @@ INTERNAL_CONTRACTS = {
     "0x0000000000000000000000000000000000000000",
 }
 
-SEED_SNIPERS = [
-    "0xc93e036884e6c130865af31c3bf12d8493b3cd26",
-    "0x99558e8d51b707069ddd64e8583c699bda94e3e6",
-    "0xb1b711cb35b4fed3b0c3a6b2e3f563cd8807c7f1",
-    "0x317ad84517203596fcfde8d9b8bb99697133ac42",
-]
-SEED_LOSERS = [
-    "0x0c1093abbc9982936c23256045218fe23eb99178",
-    "0x25b8b89ebdf46218ce552548b2d00ce432abefb1",
-    "0x39125313116835eb6a55688350813921c9360246",
-]
+# Seeds now read from watchlist files (manually curated).
+def _load_seeds(path: str) -> list[str]:
+    try:
+        with open(path) as f:
+            return [line.strip().lower() for line in f if line.strip().startswith("0x")]
+    except FileNotFoundError:
+        return []
+
+SEED_SNIPERS = _load_seeds("watchlist_snipers.txt")
+SEED_LOSERS  = _load_seeds("watchlist_losers.txt")
 
 LIMIT_TRADES_PER_WALLET = 60  # recent trades to inspect per seed
 MAX_ITERATIONS          = 2
@@ -225,13 +224,15 @@ def main() -> None:
     print(f"FINAL: {len(snipers)} snipers, {len(losers)} losers")
     print(f"{'=' * 60}")
 
-    with open("watchlist_snipers.txt", "w") as f:
+    # Write to *_expanded.txt so the curated watchlist_*.txt stays intact.
+    # User can review and manually merge.
+    with open("watchlist_snipers_expanded.txt", "w") as f:
         for s in sorted(snipers):
             f.write(s + "\n")
-    with open("watchlist_losers.txt", "w") as f:
+    with open("watchlist_losers_expanded.txt", "w") as f:
         for l in sorted(losers):
             f.write(l + "\n")
-    print("Written: watchlist_snipers.txt, watchlist_losers.txt")
+    print("Written: watchlist_snipers_expanded.txt, watchlist_losers_expanded.txt")
 
 
 if __name__ == "__main__":

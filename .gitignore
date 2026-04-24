@@ -25,6 +25,7 @@ venv/
 .claude/
 
 # Watchlist outputs (wallet lists — local artefacts, rebuildable via scripts/expand_watchlist.py)
-watchlist_snipers.txt
-watchlist_losers.txt
+watchlist_snipers_expanded.txt
+watchlist_losers_expanded.txt
 losers_enriched.csv
+losers_filtered.csv
