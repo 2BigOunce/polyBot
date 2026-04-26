@@ -148,6 +148,7 @@ CLUSTER_MIN_TTL_MIN       = float(os.getenv("CLUSTER_MIN_TTL_MIN", "60"))    # 1
 CLUSTER_MAX_TTL_MIN       = float(os.getenv("CLUSTER_MAX_TTL_MIN", "240"))   # 4h
 CLUSTER_OUR_SIZE_RATIO    = float(os.getenv("CLUSTER_OUR_SIZE_RATIO", "0.125"))  # 1/8 of insider size
 CLUSTER_OUR_MAX_USDC      = float(os.getenv("CLUSTER_OUR_MAX_USDC", "100"))  # hard per-trade cap (paper)
+CLUSTER_PNL_REPORT_HOUR_UTC = int(os.getenv("CLUSTER_PNL_REPORT_HOUR_UTC", "8"))  # daily Telegram digest hour
 # The operator cluster — established in analysis/report.md section 7.A.
 CLUSTER_WALLETS = [
     "0x06dc51826bc524d9a83770e7de9dd7e005b04524",  # ETH/SOL/XRP daily markets

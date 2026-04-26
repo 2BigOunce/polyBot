@@ -8,7 +8,7 @@ from src.arb.market_cache import run_market_cache
 from src.arb.resolution_monitor import run_resolution_monitor
 from src.chain.deposit_monitor import monitor_deposits
 from src.chain.reaper import reaper
-from src.clob.cluster_tracker import run_cluster_tracker
+from src.clob.cluster_tracker import cluster_pnl_reporter, run_cluster_tracker
 from src.clob.onchain_tracker import run_onchain_watcher
 from src.clob.tracker import run_tracker
 from src.trading.position_closer import position_closer
@@ -31,6 +31,7 @@ async def main():
         run_clob_mispricing(),
         run_loser_tracker(),
         run_cluster_tracker(),
+        cluster_pnl_reporter(),
         reaper(),
         position_closer(),
         run_bot(),

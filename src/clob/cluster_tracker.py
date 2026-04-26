@@ -28,7 +28,7 @@ import asyncio
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
@@ -40,11 +40,13 @@ from config.settings import (
     CLUSTER_MIN_USDC,
     CLUSTER_OUR_MAX_USDC,
     CLUSTER_OUR_SIZE_RATIO,
+    CLUSTER_PNL_REPORT_HOUR_UTC,
     CLUSTER_POLL_INTERVAL_S,
     CLUSTER_TRACKER_ENABLED,
     CLUSTER_WALLETS,
 )
-from src.alerts.telegram import send_cluster_copy
+from src.alerts.telegram import send_cluster_copy, send_cluster_daily_pnl
+from src.clob.cluster_reconcile import format_summary, reconcile
 
 DATA_API = "https://data-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
@@ -199,6 +201,41 @@ async def _poll_wallet(wallet: str, session: aiohttp.ClientSession) -> None:
         except Exception as e:
             print(f"[cluster] {wallet[:10]}.. poll error: {e}")
         await asyncio.sleep(CLUSTER_POLL_INTERVAL_S)
+
+
+def _seconds_until_next_report(hour_utc: int) -> float:
+    """Seconds until the next CLUSTER_PNL_REPORT_HOUR_UTC:00:00 UTC."""
+    now = datetime.now(timezone.utc)
+    target = now.replace(hour=hour_utc, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+async def cluster_pnl_reporter() -> None:
+    """
+    Daily Telegram digest. Sleeps until CLUSTER_PNL_REPORT_HOUR_UTC, runs the
+    reconcile against the public CLOB, sends a multi-line summary, repeats.
+
+    Reconcile is a blocking sequence of HTTP calls; we offload it to a
+    thread to keep the event loop responsive while it runs.
+    """
+    if not CLUSTER_TRACKER_ENABLED:
+        return
+    print(f"[cluster] daily P&L reporter armed for {CLUSTER_PNL_REPORT_HOUR_UTC:02d}:00 UTC")
+    while True:
+        wait_s = _seconds_until_next_report(CLUSTER_PNL_REPORT_HOUR_UTC)
+        await asyncio.sleep(wait_s)
+        try:
+            records, pending, new_resolved = await asyncio.to_thread(reconcile)
+            text = format_summary(records, pending, new_resolved)
+            await send_cluster_daily_pnl(text)
+            print(f"[cluster] daily P&L digest sent ({len(records)} records, "
+                  f"{new_resolved} new, {pending} pending)")
+        except Exception as e:
+            print(f"[cluster] daily P&L digest failed: {e}")
+        # small extra sleep to avoid double-firing if to_thread returns under 1s
+        await asyncio.sleep(60)
 
 
 async def run_cluster_tracker() -> None:

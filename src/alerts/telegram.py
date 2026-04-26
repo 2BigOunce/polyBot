@@ -194,6 +194,12 @@ async def send_follow_alert(
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
 
 
+async def send_cluster_daily_pnl(summary_text: str):
+    """Daily P&L digest from src/clob/cluster_reconcile.format_summary."""
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=summary_text, disable_notification=True)
+
+
 async def send_cluster_copy(
     wallet: str,
     question: str,
