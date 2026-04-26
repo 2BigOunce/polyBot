@@ -29,3 +29,6 @@ watchlist_snipers_expanded.txt
 watchlist_losers_expanded.txt
 losers_enriched.csv
 losers_filtered.csv
+
+# Investigation artefacts (re-runnable, can be huge)
+analysis/data/

@@ -129,3 +129,28 @@ MAKER_SANDWICH_MAX_ASK     = float(os.getenv("MAKER_SANDWICH_MAX_ASK",    "0.20"
 MAKER_SANDWICH_MIN_BID     = float(os.getenv("MAKER_SANDWICH_MIN_BID",    "0.80"))  # min bid price to sell into
 MAKER_SANDWICH_MIN_PROFIT  = float(os.getenv("MAKER_SANDWICH_MIN_PROFIT", "0.50"))  # min bid-ask spread
 MAKER_SANDWICH_MAX_TRADE   = float(os.getenv("MAKER_SANDWICH_MAX_TRADE",  "100"))   # USDC cap per trade
+
+# --- Cluster copy-trade (lottery-sniper operator) ---
+# Tracks the 4-wallet cluster identified in analysis/report.md (operator
+# behind 0x06dc51). Copies their MID-BOOK entries (price 0.10-0.30, ttl
+# 1-4h before close, size >= $10) which back-tested at +$371/trade with
+# 68% win rate over ~30 days. Excludes the lottery sweeps at $0.001
+# (impossible to copy due to latency).
+#
+# In paper mode the tracker only logs candidate trades to a JSONL file.
+# A separate reconciliation job (TBD) will compute realised P&L.
+CLUSTER_TRACKER_ENABLED   = os.getenv("CLUSTER_TRACKER_ENABLED", "true").lower() == "true"
+CLUSTER_POLL_INTERVAL_S   = int(os.getenv("CLUSTER_POLL_INTERVAL_S", "10"))   # per-wallet poll
+CLUSTER_MIN_PRICE         = float(os.getenv("CLUSTER_MIN_PRICE", "0.10"))    # entry price floor
+CLUSTER_MAX_PRICE         = float(os.getenv("CLUSTER_MAX_PRICE", "0.30"))    # entry price ceiling
+CLUSTER_MIN_USDC          = float(os.getenv("CLUSTER_MIN_USDC", "10"))       # ignore spam
+CLUSTER_MIN_TTL_MIN       = float(os.getenv("CLUSTER_MIN_TTL_MIN", "60"))    # 1h
+CLUSTER_MAX_TTL_MIN       = float(os.getenv("CLUSTER_MAX_TTL_MIN", "240"))   # 4h
+CLUSTER_OUR_SIZE_RATIO    = float(os.getenv("CLUSTER_OUR_SIZE_RATIO", "0.125"))  # 1/8 of insider size
+CLUSTER_OUR_MAX_USDC      = float(os.getenv("CLUSTER_OUR_MAX_USDC", "100"))  # hard per-trade cap (paper)
+# The operator cluster — established in analysis/report.md section 7.A.
+CLUSTER_WALLETS = [
+    "0x06dc51826bc524d9a83770e7de9dd7e005b04524",  # ETH/SOL/XRP daily markets
+    "0x04283f2fef49d70d8c55ab240450d17a65bf85b1",  # 5-min Up/Down markets
+    "0x6e1d5040d0ac73709b0621f620d2a60b80d2d0fa",  # BTC daily/range markets
+]

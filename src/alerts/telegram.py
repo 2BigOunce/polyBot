@@ -194,6 +194,36 @@ async def send_follow_alert(
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
 
 
+async def send_cluster_copy(
+    wallet: str,
+    question: str,
+    outcome: str,
+    insider_price: float,
+    insider_size: float,
+    our_size: float,
+    ttl_min: float,
+):
+    """
+    Lottery-sniper cluster copy-trade signal.
+
+    Fired by src/clob/cluster_tracker.py when a wallet from CLUSTER_WALLETS
+    makes a BUY matching the back-tested edge (price 0.10-0.30, ttl 1-4h
+    before close, size >= $10, crypto market).
+    """
+    alias = get_wallet_alias(wallet)
+    short = alias or f"{wallet[:6]}…{wallet[-4:]}"
+    message = (
+        f"🎯 CLUSTER COPY\n"
+        f"Wallet: {short}\n"
+        f"Market: {question[:60]}\n"
+        f"Side: BUY | {outcome} @ {insider_price:.3f}\n"
+        f"Insider: {insider_size:.0f} USDC | Ours: {our_size:.2f} USDC\n"
+        f"Time-to-close: {ttl_min:.0f} min"
+    )
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, disable_notification=True)
+
+
 async def send_cluster_alert(wallet: str, cluster: list[str]):
     all_wallets = [wallet] + cluster
     latest_buys = get_wallets_latest_buy(all_wallets)
