@@ -1,0 +1,56 @@
+# polyBot
+
+Async Python system that monitors Polymarket (Polygon) in real time, tracks wallets on-chain and on the order book, and tests trading strategies around market resolution.
+
+> **Status:** experimental personal project. The strategies were not profitable over time; the copy-trading module runs in paper-trade mode only. The repository is kept as a record of the engineering work, not as a trading tool.
+
+## What it does
+
+- **Wallet tracking:** follows a watchlist of wallets through the CLOB API and on-chain events, scores wallets (account age, deposits, behavior) to separate likely informed or automated traders from retail.
+- **Cluster copy-tracking:** groups related wallets into clusters and paper-trades their positions, with a daily P&L digest sent on Telegram.
+- **Resolution and mispricing monitoring:** watches markets close to resolution and detects mispriced order books (thin or spoofed bids, price/spread thresholds).
+- **Loser tracker:** identifies wallets that systematically sell at bad prices before resolution, and drives the WebSocket subscriptions toward their markets.
+- **Alerting:** Telegram bot for signals and daily reports.
+
+## Architecture
+
+All components run as concurrent `asyncio` tasks launched from `main.py`. One failing task does not stop the others (`asyncio.gather(..., return_exceptions=True)`).
+
+```
+src/
+├── alerts/     Telegram bot and reports
+├── analysis/   Order book history analysis
+├── arb/        Market cache, CLOB WebSocket, resolution monitor, mispricing and loser tracking
+├── chain/      On-chain monitoring (deposits, wallet age), SQLite storage, cleanup
+├── clob/       Wallet and cluster trackers (CLOB + on-chain), watchlists
+└── trading/    Position management and maker positioning
+```
+
+## Engineering highlights
+
+- **Latency:** WebSocket subscriptions restricted to the markets that matter (loser-driven "lite" subscriptions, markets closing within 2 days), removing about 850 ms from the reaction path.
+- **Scaling the order book feed:** subscriptions split into 5k-token shards to stay under server limits; subscription window reduced to fix RAM saturation.
+- **Robustness:** fallbacks to the Gamma API when the CLOB returns empty data, per-token cooldowns to prevent buy cascades, filters against spoofed bids, P&L checked against the `/trades` API as ground truth.
+- **CLOB V2 migration:** support for both client versions with deploy and cutover scripts for the April 2026 exchange upgrade, plus latency instrumentation.
+
+## Stack
+
+Python 3.12, asyncio, web3.py, aiohttp, websockets, py-clob-client (V1 and V2), networkx, SQLite, python-telegram-bot. Deployed on an Ubuntu VPS (AWS Lightsail, eu-west-1) with a dedicated Polygon RPC node.
+
+## Setup
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+# create a .env file with your RPC endpoint, wallet credentials and Telegram bot token
+python main.py
+```
+
+Never commit the `.env` file or any private key.
+
+## Lessons learned
+
+- Most of the edge in resolution trading is latency, and competing bots were faster.
+- Wallet-based signals are noisy: retail winners and genuine informed traders are hard to separate without more data.
+- Building the monitoring and data pipeline was the most valuable part of the project.
